@@ -1,6 +1,9 @@
+// Copyright (c) clast-project. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
+
 using System.Buffers.Binary;
 
-namespace Fsst;
+namespace Clast.Fsst;
 
 /// <summary>
 /// Export/import symbol tables for both FSST8 and FSST12 variants.
@@ -34,7 +37,7 @@ public static class FsstSerializer
         writer.Write((ushort)table.NSymbols);
 
         // Concatenated symbol data
-        Span<byte> symBuf = stackalloc byte[8];
+        byte[] symBuf = new byte[8];
         for (int i = 0; i < table.NSymbols; i++)
         {
             var sym = table.Symbols[i];
@@ -42,7 +45,7 @@ public static class FsstSerializer
             writer.Write((byte)len);
 
             BinaryPrimitives.WriteUInt64LittleEndian(symBuf, sym.Val);
-            writer.Write(symBuf[..len]);
+            writer.Write(symBuf, 0, len);
         }
 
         return ms.ToArray();
@@ -106,7 +109,7 @@ public static class FsstSerializer
         writer.Write((ushort)map.NSymbols);
 
         // Symbol data
-        Span<byte> mapBuf = stackalloc byte[8];
+        byte[] mapBuf = new byte[8];
         for (int i = SymbolMap.CodeBase12; i < SymbolMap.CodeBase12 + map.NSymbols; i++)
         {
             var sym = map.Symbols[i];
@@ -114,7 +117,7 @@ public static class FsstSerializer
             writer.Write((byte)len);
 
             BinaryPrimitives.WriteUInt64LittleEndian(mapBuf, sym.Val);
-            writer.Write(mapBuf[..len]);
+            writer.Write(mapBuf, 0, len);
         }
 
         return ms.ToArray();

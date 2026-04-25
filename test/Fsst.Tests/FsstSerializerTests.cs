@@ -1,6 +1,9 @@
+// Copyright (c) clast-project. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
+
 using System.Text;
 
-namespace Fsst.Tests;
+namespace Clast.Fsst.Tests;
 
 public class FsstSerializerTests
 {
@@ -32,7 +35,7 @@ public class FsstSerializerTests
 
         // Compress with imported table, decompress
         var compressed = FsstEncoder.Compress(imported, data);
-        var decompressed = decoder.Decompress(compressed, data.Length);
+        var decompressed = decoder.Decompress(compressed);
         Assert.Equal(data, decompressed);
     }
 
@@ -62,7 +65,7 @@ public class FsstSerializerTests
         var decoder = Fsst12Decoder.FromSymbolMap(imported);
 
         var compressed = Fsst12Encoder.Compress(imported, data);
-        var decompressed = decoder.Decompress(compressed, data.Length);
+        var decompressed = decoder.Decompress(compressed);
         Assert.Equal(data, decompressed);
     }
 

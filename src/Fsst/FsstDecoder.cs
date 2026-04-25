@@ -1,19 +1,27 @@
-using System.Runtime.CompilerServices;
+// Copyright (c) clast-project. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
-namespace Fsst;
+using System.Buffers;
+using System.Runtime.CompilerServices;
+using System.Text;
+
+namespace Clast.Fsst;
 
 /// <summary>
 /// FSST8 decoder: decompresses data compressed with FsstEncoder.
+/// Instances are immutable after construction and safe to share across threads.
 /// </summary>
 public sealed class FsstDecoder
 {
     private const int EscCode = 255;
 
     /// <summary>Symbol lengths indexed by code (0-254).</summary>
-    public readonly byte[] Len = new byte[255];
+    private readonly byte[] Len = new byte[255];
 
     /// <summary>Symbol values indexed by code (0-254), stored as ulong (up to 8 bytes).</summary>
-    public readonly ulong[] DecoderSymbols = new ulong[255];
+    private readonly ulong[] DecoderSymbols = new ulong[255];
+
+    private FsstDecoder() { }
 
     /// <summary>Create a decoder from a finalized symbol table.</summary>
     public static FsstDecoder FromSymbolTable(SymbolTable table)
@@ -33,19 +41,36 @@ public sealed class FsstDecoder
         return decoder;
     }
 
-    /// <summary>Decompress a single compressed byte span.</summary>
-    public unsafe byte[] Decompress(ReadOnlySpan<byte> compressed, int originalLength = -1)
+    /// <summary>
+    /// Returns an upper bound on the number of bytes <see cref="Decompress(ReadOnlySpan{byte})"/>
+    /// may produce for compressed input of the given length.
+    /// </summary>
+    public static int MaxDecompressedLength(int compressedLength)
     {
-        if (compressed.Length == 0)
-            return [];
+        if (compressedLength < 0) throw new ArgumentOutOfRangeException(nameof(compressedLength));
+        // Each compressed byte expands to at most 8 output bytes (a real symbol of max length).
+        // Escape sequences take 2 compressed bytes for 1 output byte, so they don't beat this bound.
+        long max = (long)compressedLength * 8;
+        if (max > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(compressedLength), "Input is too large.");
+        return (int)max;
+    }
 
-        // If we don't know original length, allocate worst case (each code = 8 bytes)
-        int allocLen = originalLength > 0 ? originalLength : compressed.Length * 8;
-        byte[] output = new byte[allocLen];
+    /// <summary>
+    /// Decompress <paramref name="compressed"/> into <paramref name="destination"/>.
+    /// Returns false (and sets <paramref name="written"/> to 0) if <paramref name="destination"/>
+    /// is too small. Use <see cref="MaxDecompressedLength"/> for a safe upper bound.
+    /// </summary>
+    public unsafe bool TryDecompress(ReadOnlySpan<byte> compressed, Span<byte> destination, out int written)
+    {
+        written = 0;
+        if (compressed.Length == 0) return true;
+
         int outPos = 0;
+        int dstLen = destination.Length;
 
         fixed (byte* inPtr = compressed)
-        fixed (byte* outPtr = output)
+        fixed (byte* outPtr = destination)
         {
             byte* cur = inPtr;
             byte* end = inPtr + compressed.Length;
@@ -56,25 +81,25 @@ public sealed class FsstDecoder
 
                 if (code == EscCode)
                 {
-                    // Escaped literal byte
-                    if (cur >= end) break;
+                    if (cur >= end) break; // dangling escape; ignore trailing byte
+                    if (outPos >= dstLen) return false;
                     outPtr[outPos++] = *cur++;
                 }
                 else
                 {
-                    // Symbol lookup
                     int len = Len[code];
                     ulong val = DecoderSymbols[code];
 
-                    // Write up to 8 bytes (may over-write, but we allocated enough)
-                    if (outPos + 8 <= output.Length)
+                    if (outPos + len > dstLen) return false;
+
+                    if (outPos + 8 <= dstLen)
                     {
+                        // Fast path: write 8 bytes (the high 8-len bytes of val are zero by construction).
                         Unsafe.WriteUnaligned(outPtr + outPos, val);
                     }
                     else
                     {
-                        // Careful write near end
-                        for (int i = 0; i < len && outPos + i < output.Length; i++)
+                        for (int i = 0; i < len; i++)
                             outPtr[outPos + i] = (byte)(val >> (i * 8));
                     }
                     outPos += len;
@@ -82,10 +107,61 @@ public sealed class FsstDecoder
             }
         }
 
-        if (outPos == output.Length)
-            return output;
+        written = outPos;
+        return true;
+    }
 
-        return output.AsSpan(0, outPos).ToArray();
+    /// <summary>Decompress <paramref name="compressed"/> and append the result to <paramref name="writer"/>.</summary>
+    public void Decompress(ReadOnlySpan<byte> compressed, IBufferWriter<byte> writer)
+    {
+        if (writer is null) throw new ArgumentNullException(nameof(writer));
+        if (compressed.Length == 0) return;
+
+        int max = MaxDecompressedLength(compressed.Length);
+        Span<byte> dst = writer.GetSpan(max);
+        if (!TryDecompress(compressed, dst, out int written))
+            throw new InvalidOperationException("Buffer writer returned a span smaller than the size hint.");
+        writer.Advance(written);
+    }
+
+    /// <summary>Decompress a single compressed byte span.</summary>
+    public byte[] Decompress(ReadOnlySpan<byte> compressed)
+    {
+        if (compressed.Length == 0) return [];
+
+        int max = MaxDecompressedLength(compressed.Length);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(max);
+        try
+        {
+            if (!TryDecompress(compressed, rented.AsSpan(0, max), out int written))
+                throw new InvalidOperationException("MaxDecompressedLength was too small.");
+            var result = new byte[written];
+            Array.Copy(rented, result, written);
+            return result;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    /// <summary>Decompress to a UTF-8 string.</summary>
+    public string DecompressString(ReadOnlySpan<byte> compressed)
+    {
+        if (compressed.Length == 0) return string.Empty;
+
+        int max = MaxDecompressedLength(compressed.Length);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(max);
+        try
+        {
+            if (!TryDecompress(compressed, rented.AsSpan(0, max), out int written))
+                throw new InvalidOperationException("MaxDecompressedLength was too small.");
+            return Encoding.UTF8.GetString(rented, 0, written);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
     /// <summary>Decompress multiple strings given their compressed lengths and offsets.</summary>

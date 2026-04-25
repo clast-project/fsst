@@ -1,7 +1,11 @@
+// Copyright (c) clast-project. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
+
 using System.Buffers;
 using System.Runtime.CompilerServices;
+using System.Text;
 
-namespace Fsst;
+namespace Clast.Fsst;
 
 /// <summary>
 /// FSST12 encoder: builds a 12-bit symbol table and compresses using 1.5-byte codes.
@@ -68,32 +72,41 @@ public static class Fsst12Encoder
             return all;
         }
 
-        var result = new List<byte>();
+        // Sample proportionally into a single pre-sized buffer.
+        var buffer = new byte[SampleMaxSize];
+        int written = 0;
         int hash = 0;
-        for (int i = 0; i < strings.Length && result.Count < SampleMaxSize; i++)
+        for (int i = 0; i < strings.Length && written < SampleMaxSize; i++)
         {
             var s = strings[i];
-            for (int j = 0; j < s.Length && result.Count < SampleMaxSize; j += SampleChunk)
+            for (int j = 0; j < s.Length && written < SampleMaxSize; j += SampleChunk)
             {
                 hash = (hash * 1103515245 + 12345) & 0x7FFFFFFF;
                 if ((hash & 127) < sampleFrac)
                 {
-                    int chunkLen = Math.Min(SampleChunk, s.Length - j);
-                    result.AddRange(s.AsSpan(j, chunkLen).ToArray());
+                    int chunkLen = Math.Min(SampleChunk, Math.Min(s.Length - j, SampleMaxSize - written));
+                    s.AsSpan(j, chunkLen).CopyTo(buffer.AsSpan(written));
+                    written += chunkLen;
                 }
             }
         }
 
-        if (result.Count == 0)
+        // Fallback: if random sampling produced nothing, take from the start.
+        if (written == 0)
         {
-            for (int i = 0; i < strings.Length && result.Count < SampleTarget; i++)
+            for (int i = 0; i < strings.Length && written < SampleTarget; i++)
             {
-                int take = Math.Min(strings[i].Length, SampleTarget - result.Count);
-                result.AddRange(strings[i].AsSpan(0, take).ToArray());
+                int take = Math.Min(strings[i].Length, SampleTarget - written);
+                strings[i].AsSpan(0, take).CopyTo(buffer.AsSpan(written));
+                written += take;
             }
         }
 
-        return [.. result];
+        if (written == 0) return [];
+        if (written == buffer.Length) return buffer;
+        var result = new byte[written];
+        Buffer.BlockCopy(buffer, 0, result, 0, written);
+        return result;
     }
 
     private static unsafe SymbolMap BuildFromSample(byte[] sample, SymbolMap prevTable, int sampleFrac)
@@ -204,22 +217,42 @@ public static class Fsst12Encoder
     }
 
     /// <summary>
-    /// Compress input bytes using 12-bit codes.
-    /// Two codes pack into 3 bytes: [low8(code1)] [high4(code1)|low4(code2)] [high8(code2)]
+    /// Returns an upper bound on the number of bytes <see cref="Compress"/> may produce
+    /// for an input of the given length.
     /// </summary>
-    public static unsafe byte[] Compress(SymbolMap table, ReadOnlySpan<byte> input)
+    public static int MaxCompressedLength(int inputLength)
     {
-        if (input.Length == 0)
-            return [];
+        if (inputLength < 0) throw new ArgumentOutOfRangeException(nameof(inputLength));
+        // Worst case: every byte produces one 12-bit code, packed at 1.5 bytes per code (rounded up).
+        long max = ((long)inputLength * 3 + 1) / 2;
+        if (max > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(inputLength), "Input is too large.");
+        return (int)max;
+    }
 
-        // Collect codes first
-        var codes = ArrayPool<ushort>.Shared.Rent(input.Length); // worst case: 1 code per byte
-        int codeCount = 0;
+    /// <summary>
+    /// Compress <paramref name="input"/> into <paramref name="destination"/> using 12-bit codes.
+    /// Two codes pack into 3 bytes: [low8(c1)] [high4(c1) | low4(c2) &lt;&lt; 4] [c2 &gt;&gt; 4].
+    /// Returns false (and sets <paramref name="written"/> to 0) if <paramref name="destination"/>
+    /// is too small.
+    /// </summary>
+    public static unsafe bool TryCompress(
+        SymbolMap table, ReadOnlySpan<byte> input, Span<byte> destination, out int written)
+    {
+        written = 0;
+        if (input.Length == 0) return true;
+
+        int outPos = 0;
+        int dstLen = destination.Length;
 
         fixed (byte* inPtr = input)
+        fixed (byte* dstPtr = destination)
         {
             byte* cur = inPtr;
             byte* end = inPtr + input.Length;
+
+            byte pending = 0;
+            bool hasPending = false;
 
             while (cur < end)
             {
@@ -227,60 +260,119 @@ public static class Fsst12Encoder
                 var sym = Symbol.FromPointer(cur, Math.Min(avail, 8));
                 int code = table.FindLongestSymbol(sym);
                 int len = table.Symbols[code].Length();
-
-                codes[codeCount++] = (ushort)code;
                 cur += len;
+
+                if (!hasPending)
+                {
+                    if (outPos >= dstLen) return false;
+                    dstPtr[outPos++] = (byte)(code & 0xFF);
+                    pending = (byte)((code >> 8) & 0x0F);
+                    hasPending = true;
+                }
+                else
+                {
+                    if (outPos + 2 > dstLen) return false;
+                    dstPtr[outPos++] = (byte)(pending | ((code & 0x0F) << 4));
+                    dstPtr[outPos++] = (byte)(code >> 4);
+                    hasPending = false;
+                }
+            }
+
+            if (hasPending)
+            {
+                if (outPos >= dstLen) return false;
+                dstPtr[outPos++] = pending;
             }
         }
 
-        // Pack 12-bit codes into bytes: 2 codes = 3 bytes
-        int outLen = (codeCount / 2) * 3 + (codeCount % 2) * 2;
-        byte[] output = new byte[outLen];
-        int outPos = 0;
-
-        for (int i = 0; i + 1 < codeCount; i += 2)
-        {
-            int c1 = codes[i];
-            int c2 = codes[i + 1];
-            output[outPos++] = (byte)(c1 & 0xFF);
-            output[outPos++] = (byte)(((c1 >> 8) & 0x0F) | ((c2 & 0x0F) << 4));
-            output[outPos++] = (byte)(c2 >> 4);
-        }
-
-        // Tail: 1 remaining code → 2 bytes
-        if (codeCount % 2 == 1)
-        {
-            int c = codes[codeCount - 1];
-            output[outPos++] = (byte)(c & 0xFF);
-            output[outPos++] = (byte)((c >> 8) & 0x0F);
-        }
-
-        ArrayPool<ushort>.Shared.Return(codes);
-        return output;
+        written = outPos;
+        return true;
     }
 
-    /// <summary>Compress multiple strings.</summary>
-    public static (byte[] compressedData, int[] lengths, int[] codeCounts) CompressBatch(
+    /// <summary>Compress <paramref name="input"/> and append the result to <paramref name="writer"/>.</summary>
+    public static void Compress(SymbolMap table, ReadOnlySpan<byte> input, IBufferWriter<byte> writer)
+    {
+        if (writer is null) throw new ArgumentNullException(nameof(writer));
+        if (input.Length == 0) return;
+
+        int max = MaxCompressedLength(input.Length);
+        Span<byte> dst = writer.GetSpan(max);
+        if (!TryCompress(table, input, dst, out int written))
+            throw new InvalidOperationException("Buffer writer returned a span smaller than the size hint.");
+        writer.Advance(written);
+    }
+
+    /// <summary>Compress a UTF-8 encoded string using 12-bit codes.</summary>
+    public static byte[] Compress(SymbolMap table, string input)
+    {
+        if (string.IsNullOrEmpty(input)) return [];
+        int byteCount = Encoding.UTF8.GetByteCount(input);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(byteCount);
+        try
+        {
+            int actual = Encoding.UTF8.GetBytes(input, 0, input.Length, rented, 0);
+            return Compress(table, rented.AsSpan(0, actual));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    /// <summary>Compress input bytes using 12-bit codes.</summary>
+    public static byte[] Compress(SymbolMap table, ReadOnlySpan<byte> input)
+    {
+        if (input.Length == 0) return [];
+
+        int max = MaxCompressedLength(input.Length);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(max);
+        try
+        {
+            if (!TryCompress(table, input, rented.AsSpan(0, max), out int written))
+                throw new InvalidOperationException("MaxCompressedLength was too small.");
+            var result = new byte[written];
+            Array.Copy(rented, result, written);
+            return result;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    /// <summary>Compress multiple strings, returning compressed bytes and per-string lengths.</summary>
+    public static (byte[] compressedData, int[] lengths) CompressBatch(
         SymbolMap table, ReadOnlySpan<byte[]> strings)
     {
         var lengths = new int[strings.Length];
-        var codeCounts = new int[strings.Length];
-        var allCompressed = new List<byte>();
 
+        long maxTotal = 0;
         for (int i = 0; i < strings.Length; i++)
+            maxTotal += MaxCompressedLength(strings[i].Length);
+        if (maxTotal > int.MaxValue)
+            throw new ArgumentException("Batch worst-case size exceeds Int32.MaxValue.", nameof(strings));
+        if (maxTotal == 0)
+            return ([], lengths);
+
+        byte[] rented = ArrayPool<byte>.Shared.Rent((int)maxTotal);
+        try
         {
-            var compressed = Compress(table, strings[i]);
-            lengths[i] = compressed.Length;
-            allCompressed.AddRange(compressed);
-
-            // Calculate code count for decompression
-            // Each pair of codes = 3 bytes, tail code = 2 bytes
-            if (compressed.Length % 3 == 0)
-                codeCounts[i] = (compressed.Length / 3) * 2;
-            else
-                codeCounts[i] = (compressed.Length / 3) * 2 + 1;
+            int totalWritten = 0;
+            for (int i = 0; i < strings.Length; i++)
+            {
+                int slot = MaxCompressedLength(strings[i].Length);
+                if (!TryCompress(table, strings[i], rented.AsSpan(totalWritten, slot), out int written))
+                    throw new InvalidOperationException("MaxCompressedLength was too small.");
+                lengths[i] = written;
+                totalWritten += written;
+            }
+            var result = new byte[totalWritten];
+            Array.Copy(rented, result, totalWritten);
+            return (result, lengths);
         }
-
-        return ([.. allCompressed], lengths, codeCounts);
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 }

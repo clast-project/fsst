@@ -1,11 +1,48 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>netstandard2.0;net8.0;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>Clast.Fsst</AssemblyName>
+    <RootNamespace>Clast.Fsst</RootNamespace>
   </PropertyGroup>
+
+  <PropertyGroup Label="Package metadata">
+    <PackageId>Clast.Fsst</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>clast-project</Authors>
+    <Company>clast-project</Company>
+    <Description>FSST (Fast Static Symbol Table) string compression for .NET. Supports both FSST8 (1-byte codes) and FSST12 (12-bit codes) variants.</Description>
+    <PackageTags>fsst;compression;string;columnar;dictionary</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/clast-project/fsst</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/clast-project/fsst</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <PropertyGroup Label="SourceLink + symbols">
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="Fsst.Tests" />

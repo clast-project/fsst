@@ -1,7 +1,10 @@
+// Copyright (c) clast-project. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
+
 using System.Text;
 using BenchmarkDotNet.Attributes;
 
-namespace Fsst.Benchmarks;
+namespace Clast.Fsst.Benchmarks;
 
 [MemoryDiagnoser]
 public class DecompressionBenchmarks
@@ -59,14 +62,14 @@ public class DecompressionBenchmarks
     }
 
     [Benchmark]
-    public byte[] Fsst8_Text() => _textDecoder8.Decompress(_textCompressed8, _textData.Length);
+    public byte[] Fsst8_Text() => _textDecoder8.Decompress(_textCompressed8);
 
     [Benchmark]
-    public byte[] Fsst8_Json() => _jsonDecoder8.Decompress(_jsonCompressed8, _jsonData.Length);
+    public byte[] Fsst8_Json() => _jsonDecoder8.Decompress(_jsonCompressed8);
 
     [Benchmark]
-    public byte[] Fsst12_Text() => _textDecoder12.Decompress(_textCompressed12, _textData.Length);
+    public byte[] Fsst12_Text() => _textDecoder12.Decompress(_textCompressed12);
 
     [Benchmark]
-    public byte[] Fsst12_Json() => _jsonDecoder12.Decompress(_jsonCompressed12, _jsonData.Length);
+    public byte[] Fsst12_Json() => _jsonDecoder12.Decompress(_jsonCompressed12);
 }

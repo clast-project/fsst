@@ -1,18 +1,26 @@
-using System.Runtime.CompilerServices;
+// Copyright (c) clast-project. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
-namespace Fsst;
+using System.Buffers;
+using System.Runtime.CompilerServices;
+using System.Text;
+
+namespace Clast.Fsst;
 
 /// <summary>
 /// FSST12 decoder: decompresses data compressed with 12-bit codes.
 /// Two codes are packed into 3 bytes.
+/// Instances are immutable after construction and safe to share across threads.
 /// </summary>
 public sealed class Fsst12Decoder
 {
     /// <summary>Symbol lengths indexed by code (0-4095).</summary>
-    public readonly byte[] Len = new byte[SymbolMap.CodeMax12];
+    private readonly byte[] Len = new byte[SymbolMap.CodeMax12];
 
     /// <summary>Symbol values indexed by code (0-4095).</summary>
-    public readonly ulong[] DecoderSymbols = new ulong[SymbolMap.CodeMax12];
+    private readonly ulong[] DecoderSymbols = new ulong[SymbolMap.CodeMax12];
+
+    private Fsst12Decoder() { }
 
     /// <summary>Create a decoder from a symbol map.</summary>
     public static Fsst12Decoder FromSymbolMap(SymbolMap map)
@@ -38,26 +46,40 @@ public sealed class Fsst12Decoder
     }
 
     /// <summary>
-    /// Decompress 12-bit packed codes.
-    /// Format: 2 codes in 3 bytes, tail 1 code in 2 bytes.
+    /// Returns an upper bound on the number of bytes <see cref="Decompress(ReadOnlySpan{byte})"/>
+    /// may produce for compressed input of the given length.
     /// </summary>
-    public unsafe byte[] Decompress(ReadOnlySpan<byte> compressed, int originalLength = -1)
+    public static int MaxDecompressedLength(int compressedLength)
     {
-        if (compressed.Length == 0)
-            return [];
+        if (compressedLength < 0) throw new ArgumentOutOfRangeException(nameof(compressedLength));
+        // 3 compressed bytes hold 2 codes; each code emits up to 8 output bytes.
+        long max = ((long)compressedLength + 2) / 3 * 16;
+        if (max > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(compressedLength), "Input is too large.");
+        return (int)max;
+    }
 
-        int allocLen = originalLength > 0 ? originalLength : compressed.Length * 8;
-        byte[] output = new byte[allocLen];
+    /// <summary>
+    /// Decompress <paramref name="compressed"/> into <paramref name="destination"/>.
+    /// Returns false (and sets <paramref name="written"/> to 0) if <paramref name="destination"/>
+    /// is too small. Use <see cref="MaxDecompressedLength"/> for a safe upper bound.
+    /// </summary>
+    public unsafe bool TryDecompress(ReadOnlySpan<byte> compressed, Span<byte> destination, out int written)
+    {
+        written = 0;
+        if (compressed.Length == 0) return true;
+
         int outPos = 0;
+        int dstLen = destination.Length;
 
         fixed (byte* inPtr = compressed)
-        fixed (byte* outPtr = output)
+        fixed (byte* outPtr = destination)
         {
             byte* cur = inPtr;
             byte* end = inPtr + compressed.Length;
 
-            // Process pairs of codes (3 bytes each)
-            while (cur + 2 < end)
+            // Process pairs of codes (3 bytes -> 2 codes).
+            while (cur + 3 <= end)
             {
                 int b0 = cur[0];
                 int b1 = cur[1];
@@ -67,27 +89,27 @@ public sealed class Fsst12Decoder
                 int code1 = b0 | ((b1 & 0x0F) << 8);
                 int code2 = (b1 >> 4) | (b2 << 4);
 
-                // Decode first code
                 int len1 = Len[code1];
                 ulong val1 = DecoderSymbols[code1];
-                if (outPos + 8 <= output.Length)
+                if (outPos + len1 > dstLen) return false;
+                if (outPos + 8 <= dstLen)
                     Unsafe.WriteUnaligned(outPtr + outPos, val1);
                 else
-                    WriteCareful(outPtr, output.Length, outPos, val1, len1);
+                    WriteCareful(outPtr, outPos, val1, len1);
                 outPos += len1;
 
-                // Decode second code
                 int len2 = Len[code2];
                 ulong val2 = DecoderSymbols[code2];
-                if (outPos + 8 <= output.Length)
+                if (outPos + len2 > dstLen) return false;
+                if (outPos + 8 <= dstLen)
                     Unsafe.WriteUnaligned(outPtr + outPos, val2);
                 else
-                    WriteCareful(outPtr, output.Length, outPos, val2, len2);
+                    WriteCareful(outPtr, outPos, val2, len2);
                 outPos += len2;
             }
 
-            // Tail: 2 remaining bytes = 1 code
-            if (cur + 1 < end)
+            // Tail: 2 remaining bytes = 1 code.
+            if (cur + 2 <= end)
             {
                 int b0 = cur[0];
                 int b1 = cur[1];
@@ -95,25 +117,77 @@ public sealed class Fsst12Decoder
 
                 int len = Len[code];
                 ulong val = DecoderSymbols[code];
-                if (outPos + 8 <= output.Length)
+                if (outPos + len > dstLen) return false;
+                if (outPos + 8 <= dstLen)
                     Unsafe.WriteUnaligned(outPtr + outPos, val);
                 else
-                    WriteCareful(outPtr, output.Length, outPos, val, len);
+                    WriteCareful(outPtr, outPos, val, len);
                 outPos += len;
             }
         }
 
-        if (outPos == output.Length)
-            return output;
-
-        return output.AsSpan(0, outPos).ToArray();
+        written = outPos;
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static unsafe void WriteCareful(byte* outPtr, int outLen, int outPos, ulong val, int len)
+    private static unsafe void WriteCareful(byte* outPtr, int outPos, ulong val, int len)
     {
-        for (int i = 0; i < len && outPos + i < outLen; i++)
+        for (int i = 0; i < len; i++)
             outPtr[outPos + i] = (byte)(val >> (i * 8));
+    }
+
+    /// <summary>Decompress <paramref name="compressed"/> and append the result to <paramref name="writer"/>.</summary>
+    public void Decompress(ReadOnlySpan<byte> compressed, IBufferWriter<byte> writer)
+    {
+        if (writer is null) throw new ArgumentNullException(nameof(writer));
+        if (compressed.Length == 0) return;
+
+        int max = MaxDecompressedLength(compressed.Length);
+        Span<byte> dst = writer.GetSpan(max);
+        if (!TryDecompress(compressed, dst, out int written))
+            throw new InvalidOperationException("Buffer writer returned a span smaller than the size hint.");
+        writer.Advance(written);
+    }
+
+    /// <summary>Decompress 12-bit packed codes.</summary>
+    public byte[] Decompress(ReadOnlySpan<byte> compressed)
+    {
+        if (compressed.Length == 0) return [];
+
+        int max = MaxDecompressedLength(compressed.Length);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(max);
+        try
+        {
+            if (!TryDecompress(compressed, rented.AsSpan(0, max), out int written))
+                throw new InvalidOperationException("MaxDecompressedLength was too small.");
+            var result = new byte[written];
+            Array.Copy(rented, result, written);
+            return result;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    /// <summary>Decompress to a UTF-8 string.</summary>
+    public string DecompressString(ReadOnlySpan<byte> compressed)
+    {
+        if (compressed.Length == 0) return string.Empty;
+
+        int max = MaxDecompressedLength(compressed.Length);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(max);
+        try
+        {
+            if (!TryDecompress(compressed, rented.AsSpan(0, max), out int written))
+                throw new InvalidOperationException("MaxDecompressedLength was too small.");
+            return Encoding.UTF8.GetString(rented, 0, written);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
     /// <summary>Decompress multiple strings.</summary>

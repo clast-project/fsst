@@ -1,7 +1,11 @@
+// Copyright (c) clast-project. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
+
 using System.Buffers;
 using System.Runtime.CompilerServices;
+using System.Text;
 
-namespace Fsst;
+namespace Clast.Fsst;
 
 /// <summary>
 /// FSST8 encoder: builds a symbol table from input data and compresses using it.
@@ -111,36 +115,48 @@ public static class FsstEncoder
             return all;
         }
 
-        // Sample proportionally
-        var result = new List<byte>();
+        // Sample proportionally into a single pre-sized buffer.
+        var buffer = new byte[SampleMaxSize];
+        int written = 0;
         int hash = 0;
-        for (int i = 0; i < strings.Length && result.Count < SampleMaxSize; i++)
+        for (int i = 0; i < strings.Length && written < SampleMaxSize; i++)
         {
             var s = strings[i];
-            for (int j = 0; j < s.Length && result.Count < SampleMaxSize; j += SampleChunk)
+            for (int j = 0; j < s.Length && written < SampleMaxSize; j += SampleChunk)
             {
                 hash = (hash * 1103515245 + 12345) & 0x7FFFFFFF;
                 if ((hash & 127) < sampleFrac)
                 {
-                    int chunkLen = Math.Min(SampleChunk, s.Length - j);
-                    result.AddRange(s.AsSpan(j, chunkLen).ToArray());
+                    int chunkLen = Math.Min(SampleChunk, Math.Min(s.Length - j, SampleMaxSize - written));
+                    s.AsSpan(j, chunkLen).CopyTo(buffer.AsSpan(written));
+                    written += chunkLen;
                 }
             }
         }
 
-        return result.Count > 0 ? [.. result] : MakeSampleFallback(strings);
+        if (written == 0) return MakeSampleFallback(strings);
+        if (written == buffer.Length) return buffer;
+        var result = new byte[written];
+        Buffer.BlockCopy(buffer, 0, result, 0, written);
+        return result;
     }
 
     private static byte[] MakeSampleFallback(ReadOnlySpan<byte[]> strings)
     {
-        // If sampling produced nothing, take from the start
-        var result = new List<byte>();
-        for (int i = 0; i < strings.Length && result.Count < SampleTarget; i++)
+        // If sampling produced nothing, take from the start.
+        var buffer = new byte[SampleTarget];
+        int written = 0;
+        for (int i = 0; i < strings.Length && written < SampleTarget; i++)
         {
-            int take = Math.Min(strings[i].Length, SampleTarget - result.Count);
-            result.AddRange(strings[i].AsSpan(0, take).ToArray());
+            int take = Math.Min(strings[i].Length, SampleTarget - written);
+            strings[i].AsSpan(0, take).CopyTo(buffer.AsSpan(written));
+            written += take;
         }
-        return [.. result];
+        if (written == 0) return [];
+        if (written == buffer.Length) return buffer;
+        var result = new byte[written];
+        Buffer.BlockCopy(buffer, 0, result, 0, written);
+        return result;
     }
 
     /// <summary>
@@ -268,49 +284,114 @@ public static class FsstEncoder
         }
     }
 
-    /// <summary>Compress input bytes using the given symbol table.</summary>
-    public static unsafe byte[] Compress(SymbolTable table, ReadOnlySpan<byte> input)
+    /// <summary>
+    /// Returns an upper bound on the number of bytes <see cref="Compress"/> may produce
+    /// for an input of the given length.
+    /// </summary>
+    public static int MaxCompressedLength(int inputLength)
     {
-        if (input.Length == 0)
-            return [];
+        if (inputLength < 0) throw new ArgumentOutOfRangeException(nameof(inputLength));
+        // Worst case: every input byte is escaped, producing 2 output bytes per input byte.
+        return inputLength * 2;
+    }
 
-        // Worst case: every byte is escaped = 2 * input.Length
-        byte[] output = ArrayPool<byte>.Shared.Rent(input.Length * 2 + 8);
+    /// <summary>
+    /// Compress <paramref name="input"/> into <paramref name="destination"/>.
+    /// Returns false (and sets <paramref name="written"/> to 0) if <paramref name="destination"/>
+    /// is too small. Use <see cref="MaxCompressedLength"/> to size the destination safely.
+    /// </summary>
+    public static unsafe bool TryCompress(
+        SymbolTable table, ReadOnlySpan<byte> input, Span<byte> destination, out int written)
+    {
+        written = 0;
+        if (input.Length == 0) return true;
+
+        int outPos = 0;
+        int dstLen = destination.Length;
+
+        fixed (byte* inPtr = input)
+        fixed (byte* dstPtr = destination)
+        {
+            byte* cur = inPtr;
+            byte* end = inPtr + input.Length;
+
+            while (cur < end)
+            {
+                int avail = (int)(end - cur);
+                var sym = Symbol.FromPointer(cur, Math.Min(avail, 8));
+                int code = table.FindLongestSymbol(sym);
+                int len = table.Symbols[code].Length();
+
+                byte byteCode = (byte)code;
+                if (byteCode == EscCode)
+                {
+                    if (outPos + 2 > dstLen) return false;
+                    dstPtr[outPos] = byteCode;
+                    dstPtr[outPos + 1] = *cur;
+                    outPos += 2;
+                }
+                else
+                {
+                    if (outPos >= dstLen) return false;
+                    dstPtr[outPos++] = byteCode;
+                }
+
+                cur += len;
+            }
+        }
+
+        written = outPos;
+        return true;
+    }
+
+    /// <summary>Compress <paramref name="input"/> and append the result to <paramref name="writer"/>.</summary>
+    public static void Compress(SymbolTable table, ReadOnlySpan<byte> input, IBufferWriter<byte> writer)
+    {
+        if (writer is null) throw new ArgumentNullException(nameof(writer));
+        if (input.Length == 0) return;
+
+        int max = MaxCompressedLength(input.Length);
+        Span<byte> dst = writer.GetSpan(max);
+        if (!TryCompress(table, input, dst, out int written))
+            throw new InvalidOperationException("Buffer writer returned a span smaller than the size hint.");
+        writer.Advance(written);
+    }
+
+    /// <summary>Compress a UTF-8 encoded string using the given symbol table.</summary>
+    public static byte[] Compress(SymbolTable table, string input)
+    {
+        if (string.IsNullOrEmpty(input)) return [];
+        int byteCount = Encoding.UTF8.GetByteCount(input);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(byteCount);
         try
         {
-            int outPos = 0;
-
-            fixed (byte* inPtr = input)
-            {
-                byte* cur = inPtr;
-                byte* end = inPtr + input.Length;
-
-                while (cur < end)
-                {
-                    int avail = (int)(end - cur);
-                    var sym = Symbol.FromPointer(cur, Math.Min(avail, 8));
-                    int code = table.FindLongestSymbol(sym);
-                    int len = table.Symbols[code].Length();
-
-                    // After finalization: codes 0-254 are real symbols,
-                    // code 511 (byte 255) = escape for unmatched bytes
-                    byte byteCode = (byte)code;
-                    output[outPos++] = byteCode;
-                    if (byteCode == EscCode)
-                    {
-                        // Escape: also emit the literal byte
-                        output[outPos++] = *cur;
-                    }
-
-                    cur += len;
-                }
-            }
-
-            return output.AsSpan(0, outPos).ToArray();
+            int actual = Encoding.UTF8.GetBytes(input, 0, input.Length, rented, 0);
+            return Compress(table, rented.AsSpan(0, actual));
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(output);
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    /// <summary>Compress input bytes using the given symbol table.</summary>
+    public static byte[] Compress(SymbolTable table, ReadOnlySpan<byte> input)
+    {
+        if (input.Length == 0) return [];
+
+        int max = MaxCompressedLength(input.Length);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(max);
+        try
+        {
+            if (!TryCompress(table, input, rented.AsSpan(0, max), out int written))
+                throw new InvalidOperationException("MaxCompressedLength was too small.");
+            var result = new byte[written];
+            Array.Copy(rented, result, written);
+            return result;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
         }
     }
 
@@ -319,15 +400,34 @@ public static class FsstEncoder
         SymbolTable table, ReadOnlySpan<byte[]> strings)
     {
         var lengths = new int[strings.Length];
-        var allCompressed = new List<byte>();
 
+        long maxTotal = 0;
         for (int i = 0; i < strings.Length; i++)
-        {
-            var compressed = Compress(table, strings[i]);
-            lengths[i] = compressed.Length;
-            allCompressed.AddRange(compressed);
-        }
+            maxTotal += MaxCompressedLength(strings[i].Length);
+        if (maxTotal > int.MaxValue)
+            throw new ArgumentException("Batch worst-case size exceeds Int32.MaxValue.", nameof(strings));
+        if (maxTotal == 0)
+            return ([], lengths);
 
-        return ([.. allCompressed], lengths);
+        byte[] rented = ArrayPool<byte>.Shared.Rent((int)maxTotal);
+        try
+        {
+            int totalWritten = 0;
+            for (int i = 0; i < strings.Length; i++)
+            {
+                int slot = MaxCompressedLength(strings[i].Length);
+                if (!TryCompress(table, strings[i], rented.AsSpan(totalWritten, slot), out int written))
+                    throw new InvalidOperationException("MaxCompressedLength was too small.");
+                lengths[i] = written;
+                totalWritten += written;
+            }
+            var result = new byte[totalWritten];
+            Array.Copy(rented, result, totalWritten);
+            return (result, lengths);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 }

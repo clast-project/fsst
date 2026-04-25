@@ -1,14 +1,17 @@
+// Copyright (c) clast-project. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
+
 using System.Numerics;
 using System.Runtime.CompilerServices;
 
-namespace Fsst;
+namespace Clast.Fsst;
 
 /// <summary>
 /// Split-byte frequency counters for FSST8 table building.
 /// Counts are split into high/low bytes to enable fast iteration
 /// over non-zero entries using trailing zero count.
 /// </summary>
-public sealed class Counters
+internal sealed class Counters
 {
     private const int CodeMax = Symbol.CodeMax; // 512
 
@@ -121,9 +124,9 @@ public sealed class Counters
 
     public void Clear()
     {
-        Array.Clear(Count1High);
-        Array.Clear(Count1Low);
-        Array.Clear(Count2High);
-        Array.Clear(Count2Low);
+        Array.Clear(Count1High, 0, Count1High.Length);
+        Array.Clear(Count1Low, 0, Count1Low.Length);
+        Array.Clear(Count2High, 0, Count2High.Length);
+        Array.Clear(Count2Low, 0, Count2Low.Length);
     }
 }

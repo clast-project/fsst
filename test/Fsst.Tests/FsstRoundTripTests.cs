@@ -1,6 +1,9 @@
+// Copyright (c) clast-project. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
+
 using System.Text;
 
-namespace Fsst.Tests;
+namespace Clast.Fsst.Tests;
 
 public class FsstRoundTripTests
 {
@@ -18,7 +21,7 @@ public class FsstRoundTripTests
         var decoder = FsstDecoder.FromSymbolTable(table);
 
         var compressed = FsstEncoder.Compress(table, data);
-        var decompressed = decoder.Decompress(compressed, data.Length);
+        var decompressed = decoder.Decompress(compressed);
 
         Assert.Equal(data, decompressed);
     }
@@ -33,7 +36,7 @@ public class FsstRoundTripTests
         var decoder = FsstDecoder.FromSymbolTable(table);
 
         var compressed = FsstEncoder.Compress(table, data);
-        var decompressed = decoder.Decompress(compressed, data.Length);
+        var decompressed = decoder.Decompress(compressed);
 
         Assert.Equal(data, decompressed);
     }
@@ -52,7 +55,7 @@ public class FsstRoundTripTests
         var decoder = FsstDecoder.FromSymbolTable(table);
 
         var compressed = FsstEncoder.Compress(table, repeated);
-        var decompressed = decoder.Decompress(compressed, repeated.Length);
+        var decompressed = decoder.Decompress(compressed);
 
         Assert.Equal(repeated, decompressed);
     }
@@ -113,7 +116,7 @@ public class FsstRoundTripTests
         var decoder = FsstDecoder.FromSymbolTable(table);
 
         var compressed = FsstEncoder.Compress(table, data);
-        var decompressed = decoder.Decompress(compressed, data.Length);
+        var decompressed = decoder.Decompress(compressed);
 
         Assert.Equal(data, decompressed);
     }
@@ -131,7 +134,7 @@ public class FsstRoundTripTests
         var decoder = Fsst12Decoder.FromSymbolMap(map);
 
         var compressed = Fsst12Encoder.Compress(map, data);
-        var decompressed = decoder.Decompress(compressed, data.Length);
+        var decompressed = decoder.Decompress(compressed);
 
         Assert.Equal(data, decompressed);
     }
@@ -146,7 +149,7 @@ public class FsstRoundTripTests
         var decoder = Fsst12Decoder.FromSymbolMap(map);
 
         var compressed = Fsst12Encoder.Compress(map, data);
-        var decompressed = decoder.Decompress(compressed, data.Length);
+        var decompressed = decoder.Decompress(compressed);
 
         Assert.Equal(data, decompressed);
     }
@@ -162,7 +165,7 @@ public class FsstRoundTripTests
         var decoder = Fsst12Decoder.FromSymbolMap(map);
 
         var compressed = Fsst12Encoder.Compress(map, data);
-        var decompressed = decoder.Decompress(compressed, data.Length);
+        var decompressed = decoder.Decompress(compressed);
 
         Assert.Equal(data, decompressed);
     }
@@ -185,7 +188,7 @@ public class FsstRoundTripTests
         var decoder = Fsst12Decoder.FromSymbolMap(map);
 
         var compressed = Fsst12Encoder.Compress(map, data);
-        var decompressed = decoder.Decompress(compressed, data.Length);
+        var decompressed = decoder.Decompress(compressed);
 
         Assert.Equal(data, decompressed);
     }

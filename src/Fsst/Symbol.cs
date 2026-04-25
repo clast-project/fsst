@@ -1,8 +1,11 @@
+// Copyright (c) clast-project. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
+
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
-namespace Fsst;
+namespace Clast.Fsst;
 
 /// <summary>
 /// 8-byte symbol with packed code/length/ignoredBits field.
@@ -10,7 +13,7 @@ namespace Fsst;
 /// Icl packs: length:4 | code:12 | ignoredBits:16 (low bits).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct Symbol
+internal struct Symbol
 {
     public const int MaxLength = 8;
 

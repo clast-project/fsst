@@ -164,19 +164,47 @@ public sealed class FsstDecoder
         }
     }
 
-    /// <summary>Decompress multiple strings given their compressed lengths and offsets.</summary>
-    public byte[][] DecompressBatch(ReadOnlySpan<byte> compressedData, ReadOnlySpan<int> lengths)
+    /// <summary>
+    /// Decompress a batch of compressed strings into caller-supplied buffers, writing
+    /// Arrow-style prefix-sum offsets so individual items can be addressed with
+    /// <c>destination[destinationOffsets[i]..destinationOffsets[i+1]]</c>.
+    /// </summary>
+    /// <param name="compressedData">Concatenated compressed bytes for every string.</param>
+    /// <param name="compressedLengths">Per-string compressed length, summing to <paramref name="compressedData"/>'s length.</param>
+    /// <param name="destination">Destination buffer for the decompressed bytes. Size with <see cref="MaxDecompressedLength"/> when the uncompressed total is unknown.</param>
+    /// <param name="destinationOffsets">Receives <c>compressedLengths.Length + 1</c> prefix-sum offsets; <c>destinationOffsets[0]</c> is always 0 and <c>destinationOffsets[^1]</c> equals <paramref name="totalWritten"/>.</param>
+    /// <param name="totalWritten">Total bytes written to <paramref name="destination"/>.</param>
+    /// <returns><c>false</c> if either output buffer is too small (and <paramref name="totalWritten"/> is set to 0); otherwise <c>true</c>.</returns>
+    public bool TryDecompressBatch(
+        ReadOnlySpan<byte> compressedData,
+        ReadOnlySpan<int> compressedLengths,
+        Span<byte> destination,
+        Span<int> destinationOffsets,
+        out int totalWritten)
     {
-        var result = new byte[lengths.Length][];
-        int offset = 0;
+        totalWritten = 0;
+        if (destinationOffsets.Length != compressedLengths.Length + 1)
+            return false;
 
-        for (int i = 0; i < lengths.Length; i++)
+        int inOffset = 0;
+        int outOffset = 0;
+        destinationOffsets[0] = 0;
+
+        for (int i = 0; i < compressedLengths.Length; i++)
         {
-            var segment = compressedData.Slice(offset, lengths[i]);
-            result[i] = Decompress(segment);
-            offset += lengths[i];
+            int len = compressedLengths[i];
+            if (len < 0 || inOffset + len > compressedData.Length)
+                return false;
+
+            if (!TryDecompress(compressedData.Slice(inOffset, len), destination[outOffset..], out int written))
+                return false;
+
+            inOffset += len;
+            outOffset += written;
+            destinationOffsets[i + 1] = outOffset;
         }
 
-        return result;
+        totalWritten = outOffset;
+        return true;
     }
 }

@@ -162,6 +162,106 @@ public sealed class SymbolTable
     }
 
     /// <summary>
+    /// Populate this table directly from a cwida/fsst <c>fsst_export</c> payload, leaving it in
+    /// the same state <see cref="Finalize"/> would produce — so the resulting table is usable
+    /// for both decoding and re-encoding. Intended for callers that already parsed the header.
+    /// </summary>
+    /// <param name="suffixLim">Boundary between non-suffixed and suffixed length-2 codes (cwida packed field).</param>
+    /// <param name="terminator">cwida packed terminator field (preserved verbatim).</param>
+    /// <param name="zeroTerminated">cwida zeroTerminated flag.</param>
+    /// <param name="histo">8-byte length histogram. Index 0 is the count of length-1 symbols, 1 is length-2, ..., 7 is length-8.</param>
+    /// <param name="nSymbols">Total number of real symbols (including the implicit terminator when <paramref name="zeroTerminated"/> is true).</param>
+    /// <param name="symbolBytes">Concatenated symbol values in code order, omitting the implicit zero-terminator when <paramref name="zeroTerminated"/> is true.</param>
+    internal void LoadCwidaPayload(
+        int suffixLim,
+        int terminator,
+        bool zeroTerminated,
+        ReadOnlySpan<byte> histo,
+        int nSymbols,
+        ReadOnlySpan<byte> symbolBytes)
+    {
+        Array.Clear(LenHisto, 0, LenHisto.Length);
+        ushort escape = (ushort)(EscCode + (1 << Symbol.LenBits));
+        for (int i = 0; i < 256; i++) ByteCodes[i] = escape;
+        for (int i = 0; i < 65536; i++) ShortCodes[i] = escape;
+        for (int i = 0; i < HashTabSize; i++) HashTab[i] = Symbol.Free();
+
+        var unused = Symbol.FromByte(0, Symbol.CodeMask);
+        for (int i = 0; i < Symbol.CodeMax; i++) Symbols[i] = unused;
+
+        // Match the length-group iteration order from cwida fsst_import:
+        //   l=1..7 reads histo[l] symbols of length l+1 (i.e. lengths 2..8)
+        //   l=8    reads histo[0] symbols of length 1, minus the implicit terminator when zeroTerminated.
+        int pos = 0;
+        int zt = zeroTerminated ? 1 : 0;
+        int code = zt;
+
+        for (int l = 1; l <= 8; l++)
+        {
+            int idx = l & 7;
+            int targetLen = idx + 1;
+            int countForGroup = histo[idx];
+            if (l == 8 && zeroTerminated) countForGroup -= 1;
+            if (countForGroup < 0)
+                throw new ArgumentException("FSST8 length histogram is inconsistent with zeroTerminated flag.", nameof(histo));
+
+            for (int i = 0; i < countForGroup; i++, code++)
+            {
+                if (pos + targetLen > symbolBytes.Length)
+                    throw new ArgumentException("FSST8 symbol payload is truncated.", nameof(symbolBytes));
+
+                ulong val = 0;
+                for (int j = 0; j < targetLen; j++)
+                    val |= (ulong)symbolBytes[pos++] << (j * 8);
+
+                var s = new Symbol { Val = val };
+                s.SetCodeLen(code, targetLen);
+                Symbols[code] = s;
+                LenHisto[targetLen - 1]++;
+
+                switch (targetLen)
+                {
+                    case 1:
+                        ByteCodes[s.First()] = (ushort)(code | (1 << Symbol.LenBits));
+                        break;
+                    case 2:
+                        ShortCodes[s.First2()] = (ushort)(code | (2 << Symbol.LenBits));
+                        break;
+                    default:
+                        int h = (int)(s.Hash() & (HashTabSize - 1));
+                        if (HashTab[h].Icl >= Symbol.IclFree)
+                        {
+                            HashTab[h].Icl = s.Icl;
+                            HashTab[h].Val = s.Val & (0xFFFFFFFFFFFFFFFF >> (int)(byte)s.Icl);
+                        }
+                        break;
+                }
+            }
+        }
+
+        if (zeroTerminated)
+        {
+            // Code 0 is an implicit length-1 zero byte. cwida writes nothing for it.
+            var t = new Symbol { Val = 0 };
+            t.SetCodeLen(0, 1);
+            Symbols[0] = t;
+            LenHisto[0]++;
+        }
+
+        // Uncovered 2-byte prefixes fall back to the first byte's ByteCodes entry.
+        for (int i = 0; i < 65536; i++)
+        {
+            if ((ShortCodes[i] & Symbol.CodeMask) < Symbol.CodeBase)
+                ShortCodes[i] = ByteCodes[i & 0xFF];
+        }
+
+        NSymbols = nSymbols;
+        SuffixLim = suffixLim;
+        Terminator = terminator;
+        ZeroTerminated = zeroTerminated;
+    }
+
+    /// <summary>
     /// Finalize the symbol table: reorder codes by length groups,
     /// populate shortCodes for single-byte fallback.
     /// </summary>

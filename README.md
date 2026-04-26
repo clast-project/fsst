@@ -39,11 +39,14 @@ SymbolTable table = FsstEncoder.BuildSymbolTable(corpus);
 // Compress / decompress a single value.
 byte[] compressed   = FsstEncoder.Compress(table, corpus[0]);
 FsstDecoder decoder = FsstDecoder.FromSymbolTable(table);
-byte[] roundtrip    = decoder.Decompress(compressed, originalLength: corpus[0].Length);
+byte[] roundtrip    = decoder.Decompress(compressed);
 
-// Or compress a batch:
+// Or compress / decompress a batch into caller-supplied buffers (Arrow-style prefix-sum offsets):
 var (data, lengths) = FsstEncoder.CompressBatch(table, corpus);
-byte[][] decoded    = decoder.DecompressBatch(data, lengths);
+var dst             = new byte[FsstDecoder.MaxDecompressedLength(data.Length)];
+var offsets         = new int[corpus.Length + 1];
+decoder.TryDecompressBatch(data, lengths, dst, offsets, out int totalWritten);
+// Item i is now in dst[offsets[i]..offsets[i+1]].
 ```
 
 ### FSST12
@@ -54,7 +57,7 @@ byte[][] decoded    = decoder.DecompressBatch(data, lengths);
 SymbolMap map         = Fsst12Encoder.BuildSymbolTable(corpus);
 byte[] compressed     = Fsst12Encoder.Compress(map, corpus[0]);
 Fsst12Decoder decoder = Fsst12Decoder.FromSymbolMap(map);
-byte[] roundtrip      = decoder.Decompress(compressed, originalLength: corpus[0].Length);
+byte[] roundtrip      = decoder.Decompress(compressed);
 ```
 
 ### Persisting a symbol table
@@ -68,7 +71,13 @@ SymbolTable restored = FsstSerializer.ImportFsst8(tableBytes);
 FsstDecoder decoder = FsstSerializer.ImportFsst8Decoder(tableBytes);
 ```
 
-`ExportFsst12` / `ImportFsst12` / `ImportFsst12Decoder` are the FSST12 equivalents.
+The FSST8 export uses the cwida/fsst `fsst_export()` on-disk format (17-byte header
+followed by raw symbol bytes in code order), so payloads are interoperable with the
+reference C++ implementation and with consumers like Lance.
+
+`ExportFsst12` / `ImportFsst12` / `ImportFsst12Decoder` are the FSST12 equivalents
+and use a separate length-prefixed framing (cwida does not publish an FSST12 export
+format).
 
 ## Project layout
 

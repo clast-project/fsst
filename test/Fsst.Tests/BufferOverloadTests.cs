@@ -97,10 +97,81 @@ public class BufferOverloadTests
         }
 
         var decoder = FsstDecoder.FromSymbolTable(table);
-        var roundtrip = decoder.DecompressBatch(writer.WrittenSpan.ToArray(), lengths);
-        Assert.Equal(inputs.Length, roundtrip.Length);
+        var compressed = writer.WrittenSpan.ToArray();
+        var dst = new byte[FsstDecoder.MaxDecompressedLength(compressed.Length)];
+        var offsets = new int[inputs.Length + 1];
+
+        Assert.True(decoder.TryDecompressBatch(compressed, lengths, dst, offsets, out int totalWritten));
+        Assert.Equal(0, offsets[0]);
+        Assert.Equal(totalWritten, offsets[^1]);
         for (int i = 0; i < inputs.Length; i++)
-            Assert.Equal(inputs[i], roundtrip[i]);
+        {
+            var slice = dst.AsSpan(offsets[i], offsets[i + 1] - offsets[i]).ToArray();
+            Assert.Equal(inputs[i], slice);
+        }
+    }
+
+    [Fact]
+    public void Fsst8_TryDecompressBatch_RejectsWrongOffsetSpan()
+    {
+        var table = Fsst8Table();
+        var decoder = FsstDecoder.FromSymbolTable(table);
+
+        var inputs = new[]
+        {
+            Encoding.UTF8.GetBytes("alpha"),
+            Encoding.UTF8.GetBytes("beta"),
+        };
+        var (compressed, lengths) = FsstEncoder.CompressBatch(table, inputs);
+        var dst = new byte[FsstDecoder.MaxDecompressedLength(compressed.Length)];
+        var wrongOffsets = new int[inputs.Length]; // should be inputs.Length + 1
+
+        Assert.False(decoder.TryDecompressBatch(compressed, lengths, dst, wrongOffsets, out int totalWritten));
+        Assert.Equal(0, totalWritten);
+    }
+
+    [Fact]
+    public void Fsst8_TryDecompressBatch_DestinationTooSmall_ReturnsFalse()
+    {
+        var table = Fsst8Table();
+        var decoder = FsstDecoder.FromSymbolTable(table);
+
+        var inputs = new[]
+        {
+            Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("abcdefgh", 50))),
+            Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("ijklmnop", 50))),
+        };
+        var (compressed, lengths) = FsstEncoder.CompressBatch(table, inputs);
+        var offsets = new int[inputs.Length + 1];
+
+        Assert.False(decoder.TryDecompressBatch(compressed, lengths, new byte[1], offsets, out int totalWritten));
+        Assert.Equal(0, totalWritten);
+    }
+
+    [Fact]
+    public void Fsst12_TryDecompressBatch_RoundTrips()
+    {
+        var map = Fsst12Map();
+        var decoder = Fsst12Decoder.FromSymbolMap(map);
+
+        var inputs = new[]
+        {
+            Encoding.UTF8.GetBytes("hello world"),
+            Encoding.UTF8.GetBytes("foo bar baz"),
+            Encoding.UTF8.GetBytes("the quick brown fox"),
+        };
+        var (compressed, lengths) = Fsst12Encoder.CompressBatch(map, inputs);
+        var dst = new byte[Fsst12Decoder.MaxDecompressedLength(compressed.Length)];
+        var offsets = new int[inputs.Length + 1];
+
+        Assert.True(decoder.TryDecompressBatch(compressed, lengths, dst, offsets, out int totalWritten));
+        Assert.Equal(0, offsets[0]);
+        Assert.Equal(totalWritten, offsets[^1]);
+        for (int i = 0; i < inputs.Length; i++)
+        {
+            var slice = dst.AsSpan(offsets[i], offsets[i + 1] - offsets[i]).ToArray();
+            Assert.Equal(inputs[i], slice);
+        }
     }
 
     [Fact]

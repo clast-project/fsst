@@ -10,81 +10,86 @@ namespace Clast.Fsst;
 /// </summary>
 public static class FsstSerializer
 {
+    // FSST8 uses the cwida/fsst on-disk format produced by fsst_export().
+    // Header layout (17 bytes), little-endian:
+    //   bytes 0..7  : packed version word
+    //                   bits 32..63 : version magic (Fsst8Version)
+    //                   bits 24..31 : suffixLim
+    //                   bits 16..23 : terminator
+    //                   bits  8..15 : nSymbols
+    //                   bits  0.. 7 : endian marker (always 1 on little-endian writers)
+    //   byte  8     : zeroTerminated flag (low bit)
+    //   bytes 9..16 : length histogram, 1 byte per entry; index 0 holds the count of
+    //                 length-1 symbols, 1 holds length-2, ..., 7 holds length-8.
+    // Symbol bytes follow in code order; the implicit zero terminator (when zeroTerminated is set)
+    // is omitted. Matches https://github.com/cwida/fsst libfsst.cpp::fsst_export verbatim.
     private const ulong Fsst8Version = 20190218UL;
+    private const byte Fsst8EndianMarker = 1;
+    private const int Fsst8HeaderLength = 17;
+
     private const ulong Fsst12Version = 20190219UL;
 
     /// <summary>
-    /// Export an FSST8 symbol table to bytes.
-    /// Format: 8-byte version | 1-byte zeroTerminated | 8-byte lenHisto (1 byte each) |
-    ///         concatenated symbol bytes (length prefix per symbol)
+    /// Export an FSST8 symbol table in the cwida/fsst <c>fsst_export()</c> format,
+    /// interoperable with the reference C++ implementation and Lance.
     /// </summary>
     public static byte[] ExportFsst8(SymbolTable table)
     {
-        using var ms = new MemoryStream();
-        using var writer = new BinaryWriter(ms);
+        if (table is null) throw new ArgumentNullException(nameof(table));
 
-        // Version header
-        writer.Write(Fsst8Version);
+        int zt = table.ZeroTerminated ? 1 : 0;
+        int totalLen = Fsst8HeaderLength;
+        for (int i = zt; i < table.NSymbols; i++)
+            totalLen += table.Symbols[i].Length();
 
-        // Zero terminated flag
-        writer.Write(table.ZeroTerminated ? (byte)1 : (byte)0);
+        var buf = new byte[totalLen];
 
-        // Length histogram (9 entries, write 8 bytes)
+        ulong version = (Fsst8Version << 32)
+                      | ((ulong)(byte)table.SuffixLim << 24)
+                      | ((ulong)(byte)table.Terminator << 16)
+                      | ((ulong)(byte)table.NSymbols << 8)
+                      | Fsst8EndianMarker;
+        BinaryPrimitives.WriteUInt64LittleEndian(buf, version);
+
+        buf[8] = (byte)zt;
         for (int i = 0; i < 8; i++)
-            writer.Write((byte)table.LenHisto[i]);
+            buf[9 + i] = (byte)table.LenHisto[i];
 
-        // Number of symbols
-        writer.Write((ushort)table.NSymbols);
-
-        // Concatenated symbol data
-        byte[] symBuf = new byte[8];
-        for (int i = 0; i < table.NSymbols; i++)
+        int pos = Fsst8HeaderLength;
+        for (int i = zt; i < table.NSymbols; i++)
         {
             var sym = table.Symbols[i];
             int len = sym.Length();
-            writer.Write((byte)len);
-
-            BinaryPrimitives.WriteUInt64LittleEndian(symBuf, sym.Val);
-            writer.Write(symBuf, 0, len);
+            ulong v = sym.Val;
+            for (int j = 0; j < len; j++)
+                buf[pos++] = (byte)(v >> (j * 8));
         }
-
-        return ms.ToArray();
+        return buf;
     }
 
-    /// <summary>Import an FSST8 symbol table from bytes.</summary>
+    /// <summary>
+    /// Import an FSST8 symbol table from a cwida/fsst <c>fsst_export()</c> payload.
+    /// </summary>
     public static SymbolTable ImportFsst8(ReadOnlySpan<byte> data)
     {
-        if (data.Length < 19) // 8 + 1 + 8 + 2 minimum
-            throw new ArgumentException("Invalid FSST8 serialized data");
+        if (data.Length < Fsst8HeaderLength)
+            throw new ArgumentException("FSST8 payload is shorter than the 17-byte header.", nameof(data));
 
-        int pos = 0;
+        ulong version = BinaryPrimitives.ReadUInt64LittleEndian(data);
+        ulong fsstVersion = version >> 32;
+        if (fsstVersion != Fsst8Version)
+            throw new ArgumentException($"Unknown FSST8 version: {fsstVersion}", nameof(data));
+        byte endianMarker = (byte)(version & 0xFF);
+        if (endianMarker != Fsst8EndianMarker)
+            throw new ArgumentException("FSST8 payload has an unsupported endian marker.", nameof(data));
 
-        ulong version = BinaryPrimitives.ReadUInt64LittleEndian(data[pos..]);
-        pos += 8;
-        if (version != Fsst8Version)
-            throw new ArgumentException($"Unknown FSST8 version: {version}");
-
-        bool zeroTerminated = data[pos++] != 0;
-
-        // Read length histogram
-        Span<int> lenHisto = stackalloc int[8];
-        for (int i = 0; i < 8; i++)
-            lenHisto[i] = data[pos++];
-
-        int nSymbols = BinaryPrimitives.ReadUInt16LittleEndian(data[pos..]);
-        pos += 2;
+        int nSymbols = (int)((version >> 8) & 0xFF);
+        int terminator = (int)((version >> 16) & 0xFF);
+        int suffixLim = (int)((version >> 24) & 0xFF);
+        bool zeroTerminated = (data[8] & 1) != 0;
 
         var table = new SymbolTable();
-
-        for (int i = 0; i < nSymbols; i++)
-        {
-            int len = data[pos++];
-            var sym = Symbol.FromSpan(data.Slice(pos, len));
-            pos += len;
-            table.Add(sym);
-        }
-
-        table.Finalize(zeroTerminated);
+        table.LoadCwidaPayload(suffixLim, terminator, zeroTerminated, data.Slice(9, 8), nSymbols, data[Fsst8HeaderLength..]);
         return table;
     }
 

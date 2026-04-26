@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Text;
 
@@ -38,6 +39,42 @@ public sealed class FsstDecoder
             decoder.DecoderSymbols[i] = sym.Val;
         }
 
+        return decoder;
+    }
+
+    /// <summary>
+    /// Create a decoder from pre-extracted FSST8 symbols, indexed by code. Slot <paramref name="i"/>
+    /// defines the symbol for code <paramref name="i"/>: its length is <paramref name="lengths"/>[i]
+    /// and its bytes occupy <paramref name="packedValues"/>[i*8 .. i*8+8] in little-endian order.
+    /// Slots with length 0 are unused.
+    ///
+    /// This API is framing-agnostic — callers are expected to have already parsed any wire format
+    /// (cwida <c>fsst_export</c>, Lance's TSSF block, etc.) into per-code lengths and 8-byte slots.
+    /// Code 255 is reserved as the escape code; if 256 slots are supplied, slot 255 must have length 0.
+    /// </summary>
+    /// <param name="lengths">Per-code symbol lengths (0..8). Length 0 marks an unused slot. At most 256 entries.</param>
+    /// <param name="packedValues">Per-code 8-byte little-endian symbol values; must be exactly <c>8 * lengths.Length</c> bytes.</param>
+    public static FsstDecoder FromSymbols(ReadOnlySpan<byte> lengths, ReadOnlySpan<byte> packedValues)
+    {
+        if (lengths.Length > 256)
+            throw new ArgumentException("FSST8 supports at most 256 symbol slots.", nameof(lengths));
+        if (packedValues.Length != lengths.Length * 8)
+            throw new ArgumentException("packedValues must contain exactly 8 bytes per length entry.", nameof(packedValues));
+        if (lengths.Length == 256 && lengths[255] != 0)
+            throw new ArgumentException("Code 255 is reserved as the escape code and must have length 0.", nameof(lengths));
+
+        var decoder = new FsstDecoder();
+        int n = Math.Min(lengths.Length, 255);
+        for (int i = 0; i < n; i++)
+        {
+            byte len = lengths[i];
+            if (len == 0) continue;
+            if (len > Symbol.MaxLength)
+                throw new ArgumentException($"Symbol length {len} at code {i} exceeds the FSST8 maximum of {Symbol.MaxLength}.", nameof(lengths));
+
+            decoder.Len[i] = len;
+            decoder.DecoderSymbols[i] = BinaryPrimitives.ReadUInt64LittleEndian(packedValues.Slice(i * 8, 8));
+        }
         return decoder;
     }
 

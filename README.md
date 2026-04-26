@@ -73,11 +73,26 @@ FsstDecoder decoder = FsstSerializer.ImportFsst8Decoder(tableBytes);
 
 The FSST8 export uses the cwida/fsst `fsst_export()` on-disk format (17-byte header
 followed by raw symbol bytes in code order), so payloads are interoperable with the
-reference C++ implementation and with consumers like Lance.
+reference C++ implementation.
 
 `ExportFsst12` / `ImportFsst12` / `ImportFsst12Decoder` are the FSST12 equivalents
 and use a separate length-prefixed framing (cwida does not publish an FSST12 export
 format).
+
+#### Bring-your-own framing
+
+Other consumers (Lance, for example) wrap symbol tables in their own container.
+`FsstDecoder.FromSymbols` skips the wire format entirely and takes pre-extracted
+symbols indexed by code:
+
+```csharp
+// lengths[i] is the byte length of the symbol for code i (0 = unused slot).
+// packedValues holds 8 little-endian bytes per code.
+FsstDecoder decoder = FsstDecoder.FromSymbols(lengths, packedValues);
+```
+
+Parse your container's framing yourself, hand over the per-code lengths and
+8-byte slots, and you get back a decoder.
 
 ## Project layout
 

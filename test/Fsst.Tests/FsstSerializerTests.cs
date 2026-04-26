@@ -119,6 +119,70 @@ public class FsstSerializerTests
     }
 
     [Fact]
+    public void Fsst8_FromSymbols_DecodesHandCraftedSlots()
+    {
+        // Two real symbols at codes 0 and 1: "ab" and "cd". Slot 255 is unused.
+        // This is the shape Lance hands us after parsing its TSSF block.
+        var lengths = new byte[256];
+        var packed = new byte[256 * 8];
+        lengths[0] = 2; packed[0] = (byte)'a'; packed[1] = (byte)'b';
+        lengths[1] = 2; packed[8] = (byte)'c'; packed[9] = (byte)'d';
+
+        var decoder = FsstDecoder.FromSymbols(lengths, packed);
+
+        byte[] compressed = [0x00, 0x01, 0xFF, (byte)'!'];
+        Assert.Equal(Encoding.UTF8.GetBytes("abcd!"), decoder.Decompress(compressed));
+    }
+
+    [Fact]
+    public void Fsst8_FromSymbols_MatchesFromSymbolTableForRealCorpus()
+    {
+        var data = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("test data here ", 200)));
+        var table = FsstEncoder.BuildSymbolTable(new[] { data });
+        var compressed = FsstEncoder.Compress(table, data);
+
+        // Project the finalized table into per-code lengths/values, then rebuild via FromSymbols.
+        var lengths = new byte[255];
+        var packed = new byte[255 * 8];
+        for (int i = 0; i < table.NSymbols && i < 255; i++)
+        {
+            var sym = table.Symbols[i];
+            lengths[i] = (byte)sym.Length();
+            BinaryPrimitives.WriteUInt64LittleEndian(packed.AsSpan(i * 8, 8), sym.Val);
+        }
+
+        var decoder = FsstDecoder.FromSymbols(lengths, packed);
+        Assert.Equal(data, decoder.Decompress(compressed));
+    }
+
+    [Fact]
+    public void Fsst8_FromSymbols_RejectsMismatchedLengths()
+    {
+        Assert.Throws<ArgumentException>(() => FsstDecoder.FromSymbols(new byte[2], new byte[15]));
+    }
+
+    [Fact]
+    public void Fsst8_FromSymbols_RejectsTooManySlots()
+    {
+        Assert.Throws<ArgumentException>(() => FsstDecoder.FromSymbols(new byte[257], new byte[257 * 8]));
+    }
+
+    [Fact]
+    public void Fsst8_FromSymbols_RejectsEscapeSlotInUse()
+    {
+        var lengths = new byte[256];
+        lengths[255] = 1;
+        Assert.Throws<ArgumentException>(() => FsstDecoder.FromSymbols(lengths, new byte[256 * 8]));
+    }
+
+    [Fact]
+    public void Fsst8_FromSymbols_RejectsOverlongSymbol()
+    {
+        var lengths = new byte[1] { 9 };
+        Assert.Throws<ArgumentException>(() => FsstDecoder.FromSymbols(lengths, new byte[8]));
+    }
+
+    [Fact]
     public void Fsst12_ExportImport_RoundTrips()
     {
         var repeated = string.Concat(Enumerable.Repeat("hello world ", 200));

@@ -1,6 +1,7 @@
 // Copyright (c) clast-project. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 
 namespace Clast.Fsst;
@@ -29,6 +30,14 @@ public sealed class SymbolMap
 
     /// <summary>Number of real symbols beyond the 256 base codes.</summary>
     internal int NSymbols;
+
+    /// <summary>
+    /// Number of multi-byte symbols in this map, in <c>[0, 3840]</c>. These occupy codes
+    /// <c>SymbolMap.CodeBase12 .. SymbolMap.CodeBase12 + SymbolCount - 1</c>; codes
+    /// <c>0..255</c> are the implicit single-byte symbols and are not included in this count.
+    /// FSST12 has no escape code, so every non-base code is a real symbol.
+    /// </summary>
+    public int SymbolCount => NSymbols;
 
     internal readonly int[] LenHisto = new int[8];
 
@@ -76,6 +85,33 @@ public sealed class SymbolMap
             }
         }
         NSymbols = 0;
+    }
+
+    /// <summary>
+    /// Writes the multi-byte symbols in a framing-agnostic dense layout: <paramref name="lengths"/>
+    /// receives <see cref="SymbolCount"/> bytes (one length in <c>[2, 8]</c> per symbol, in code
+    /// order starting at <c>CodeBase12</c>); <paramref name="packedValues"/> receives
+    /// <c>SymbolCount * 8</c> bytes (each symbol's bytes packed little-endian, zero-padded to 8).
+    /// The implicit <c>0..255</c> single-byte codes are not emitted. For the existing FSST12
+    /// wire format, use <see cref="FsstSerializer.ExportFsst12"/>.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="lengths"/> is shorter than <see cref="SymbolCount"/>, or
+    /// <paramref name="packedValues"/> is shorter than <c>SymbolCount * 8</c>.
+    /// </exception>
+    public void ExportRaw(Span<byte> lengths, Span<byte> packedValues)
+    {
+        if (lengths.Length < NSymbols)
+            throw new ArgumentException($"Buffer must be at least {NSymbols} bytes (SymbolCount).", nameof(lengths));
+        if (packedValues.Length < NSymbols * 8)
+            throw new ArgumentException($"Buffer must be at least {NSymbols * 8} bytes (SymbolCount * 8).", nameof(packedValues));
+
+        for (int i = 0; i < NSymbols; i++)
+        {
+            var sym = Symbols[CodeBase12 + i];
+            lengths[i] = (byte)sym.Length();
+            BinaryPrimitives.WriteUInt64LittleEndian(packedValues.Slice(i * 8, 8), sym.Val);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

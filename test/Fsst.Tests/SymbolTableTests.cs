@@ -196,4 +196,107 @@ public class SymbolTableTests
         int code = map.FindLongestSymbol(lookup);
         Assert.True(code >= SymbolMap.CodeBase12);
     }
+
+    [Fact]
+    public void SymbolTable_SymbolCount_NeverIncludesEscapeCode()
+    {
+        // FSST8 reserves code 255 as the escape code, so SymbolCount must always be <= 255.
+        // Feed the encoder enough variety to push the table toward saturation, then check
+        // the count never crosses into the escape slot. (If the MaxSymbols cap regressed to
+        // 256, this would catch it.)
+        var rng = new Random(0);
+        var data = new byte[256 * 1024];
+        rng.NextBytes(data);
+
+        var table = FsstEncoder.BuildSymbolTable(new[] { data });
+        Assert.True(
+            table.SymbolCount <= 255,
+            $"SymbolCount must exclude the escape code (255); got {table.SymbolCount}.");
+    }
+
+    [Fact]
+    public void SymbolTable_ExportRaw_RoundTripsThroughFsstDecoderFromSymbols()
+    {
+        var data = Encoding.UTF8.GetBytes(
+            string.Concat(Enumerable.Repeat("the quick brown fox jumps over the lazy dog ", 200)));
+        var table = FsstEncoder.BuildSymbolTable(new[] { data });
+
+        var lengths = new byte[table.SymbolCount];
+        var packed = new byte[table.SymbolCount * 8];
+        table.ExportRaw(lengths, packed);
+
+        var decoder = FsstDecoder.FromSymbols(lengths, packed);
+        var compressed = FsstEncoder.Compress(table, data);
+        Assert.Equal(data, decoder.Decompress(compressed));
+    }
+
+    [Fact]
+    public void SymbolTable_ExportRaw_ThrowsOnTooSmallLengthsBuffer()
+    {
+        var data = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("hello world ", 200)));
+        var table = FsstEncoder.BuildSymbolTable(new[] { data });
+        Assert.True(table.SymbolCount > 0, "test precondition: encoder produced at least one symbol");
+
+        Assert.Throws<ArgumentException>(() =>
+            table.ExportRaw(new byte[table.SymbolCount - 1], new byte[table.SymbolCount * 8]));
+    }
+
+    [Fact]
+    public void SymbolTable_ExportRaw_ThrowsOnTooSmallPackedValuesBuffer()
+    {
+        var data = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("hello world ", 200)));
+        var table = FsstEncoder.BuildSymbolTable(new[] { data });
+        Assert.True(table.SymbolCount > 0, "test precondition: encoder produced at least one symbol");
+
+        Assert.Throws<ArgumentException>(() =>
+            table.ExportRaw(new byte[table.SymbolCount], new byte[table.SymbolCount * 8 - 1]));
+    }
+
+    [Fact]
+    public void SymbolMap_SymbolCount_ExcludesImplicitSingleByteCodes()
+    {
+        // FSST12's 256 single-byte codes (0..255) are implicit and not part of SymbolCount.
+        var map = new SymbolMap();
+        Assert.Equal(0, map.SymbolCount);
+
+        map.Add(Symbol.FromSpan("ab"u8));
+        Assert.Equal(1, map.SymbolCount);
+    }
+
+    [Fact]
+    public void SymbolMap_ExportRaw_WritesExpectedSymbolBytes()
+    {
+        var map = new SymbolMap();
+        map.Add(Symbol.FromSpan("ab"u8));
+        map.Add(Symbol.FromSpan("cdef"u8));
+
+        var lengths = new byte[map.SymbolCount];
+        var packed = new byte[map.SymbolCount * 8];
+        map.ExportRaw(lengths, packed);
+
+        Assert.Equal((byte)2, lengths[0]);
+        Assert.Equal((byte)4, lengths[1]);
+
+        Assert.Equal((byte)'a', packed[0]);
+        Assert.Equal((byte)'b', packed[1]);
+        for (int i = 2; i < 8; i++) Assert.Equal((byte)0, packed[i]);
+
+        Assert.Equal((byte)'c', packed[8]);
+        Assert.Equal((byte)'d', packed[9]);
+        Assert.Equal((byte)'e', packed[10]);
+        Assert.Equal((byte)'f', packed[11]);
+        for (int i = 12; i < 16; i++) Assert.Equal((byte)0, packed[i]);
+    }
+
+    [Fact]
+    public void SymbolMap_ExportRaw_ThrowsOnTooSmallBuffers()
+    {
+        var map = new SymbolMap();
+        map.Add(Symbol.FromSpan("ab"u8));
+
+        Assert.Throws<ArgumentException>(() =>
+            map.ExportRaw(new byte[0], new byte[8]));
+        Assert.Throws<ArgumentException>(() =>
+            map.ExportRaw(new byte[1], new byte[7]));
+    }
 }

@@ -12,7 +12,17 @@
 
   <PropertyGroup Label="Package metadata">
     <PackageId>Clast.Fsst</PackageId>
-    <Version>0.1.0</Version>
+    <!-- Local default only; release.yml packs with -p:Version=<tag>. -->
+    <Version>0.2.0</Version>
+    <!-- Held across the whole 0.2.x line so consumers don't need a binding
+         redirect per patch. Under 0.x semver the minor is the breaking slot,
+         so bump this to 0.3.0.0 at the next breaking release. Hardcoded rather
+         than derived from $(Version), which the release tag overrides. -->
+    <AssemblyVersion>0.2.0.0</AssemblyVersion>
+    <!-- FileVersion would otherwise default to the pinned AssemblyVersion; track
+         the real version so builds stay distinguishable. Skipped for prerelease
+         values, which are not valid Win32 file versions. -->
+    <FileVersion Condition="!$(Version.Contains('-'))">$(Version)</FileVersion>
     <Authors>clast-project</Authors>
     <Company>clast-project</Company>
     <Description>FSST (Fast Static Symbol Table) string compression for .NET. Supports both FSST8 (1-byte codes) and FSST12 (12-bit codes) variants.</Description>
@@ -45,7 +55,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="Fsst.Tests" />
+    <InternalsVisibleTo Include="Fsst.Tests" Key="$(ClastPublicKey)" />
   </ItemGroup>
 
 </Project>

@@ -96,6 +96,47 @@ public class FsstEncoderTests
         Assert.Equal(data, FsstDecoder.FromSymbolTable(table).Decompress(compressed));
     }
 
+    [Theory]
+    [InlineData(1000)]
+    [InlineData(3840)]  // exactly the pair-counter ceiling
+    [InlineData(3841)]  // first increment that used to overflow
+    [InlineData(3900)]
+    [InlineData(8000)]
+    public void BuildSymbolTable_HighlyRepetitiveInput_StillCompresses(int repeats)
+    {
+        // Regression for #3. Past 3840 occurrences of one adjacent pair, the counter carried into a
+        // neighbouring pair's slot; the trainer then built a symbol for a pair that never occurred
+        // and stalled. "ab" x8000 came back at 1.00x — the most compressible input imaginable
+        // returned at its original size.
+        var data = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("ab", repeats)));
+        var table = FsstEncoder.BuildSymbolTable([data]);
+        var compressed = FsstEncoder.Compress(table, data);
+
+        Assert.True(compressed.Length * 6 < data.Length,
+            $"expected better than 6x for {repeats} repeats, got {(double)data.Length / compressed.Length:F2}x " +
+            $"(histogram [{string.Join(",", table.LenHisto)}])");
+        Assert.Equal(data, FsstDecoder.FromSymbolTable(table).Decompress(compressed));
+    }
+
+    [Fact]
+    public void BuildSymbolTable_DoesNotInventSymbolsAbsentFromTheInput()
+    {
+        // The overflow's visible signature: a table entry containing a byte the input never held.
+        var data = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("ab", 8000)));
+        var table = FsstEncoder.BuildSymbolTable([data]);
+
+        for (int i = 0; i < table.NSymbols; i++)
+        {
+            var symbol = table.Symbols[i];
+            for (int j = 0; j < symbol.Length(); j++)
+            {
+                byte b = (byte)(symbol.Val >> (j * 8));
+                Assert.True(b == (byte)'a' || b == (byte)'b',
+                    $"symbol at code {i} contains byte 0x{b:X2}, which never appears in the input");
+            }
+        }
+    }
+
     [Fact]
     public void BuildSymbolTable_TrainsLength8Symbols()
     {

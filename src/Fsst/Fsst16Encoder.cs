@@ -8,7 +8,8 @@ namespace Clast.Fsst;
 
 /// <summary>
 /// FSST16 encoder: builds a 16-bit symbol table and compresses using 2-byte little-endian codes.
-/// Code 65,535 escapes one literal byte.
+/// Code 65,535 is the escape marker and is followed by the literal byte as a little-endian
+/// <c>uint16</c> in <c>[0, 255]</c>.
 /// </summary>
 public static class Fsst16Encoder
 {
@@ -22,7 +23,7 @@ public static class Fsst16Encoder
     /// <summary>
     /// Build a 16-bit symbol table from a representative corpus. The result always contains all 256
     /// single-byte symbols — with 65,535 codes available there is no reason to leave a byte to a
-    /// 3-byte escape — so tables from this method never escape and never exceed 2x expansion.
+    /// 4-byte escape — so tables from this method never escape and never exceed 2x expansion.
     /// </summary>
     /// <param name="rows">Sample rows. Only used for training; they need not be the full corpus.</param>
     /// <param name="maxSymbolLength">
@@ -244,8 +245,10 @@ public static class Fsst16Encoder
                 var sym = Symbol16.FromPointer(cur, (int)(end - cur));
                 int code = table.FindLongestSymbol(sym);
 
-                // 2 bytes per code, plus the literal byte an escape carries.
-                compressedSize += code == SymbolTable16.EscCode ? 3 : 2;
+                // 2 bytes per code; an escape costs 4, being the marker plus a uint16 literal.
+                // Unreachable while every candidate table covers all 256 single bytes, but the cost
+                // model should not quietly disagree with what TryCompress emits.
+                compressedSize += code == SymbolTable16.EscCode ? 4 : 2;
                 cur += table.Symbols[code].Length();
             }
         }

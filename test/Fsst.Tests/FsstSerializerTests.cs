@@ -97,6 +97,46 @@ public class FsstSerializerTests
     }
 
     [Fact]
+    public void Fsst8_ImportedTable_StillEncodesLength2Symbols()
+    {
+        // Regression for #2. LoadCwidaPayload writes finalized codes (0..nSymbols-1), so its
+        // "uncovered 2-byte prefix" fallback pass could not test them against CodeBase — doing so
+        // treated every length-2 symbol it had just installed as uncovered and clobbered it.
+        var payload = new byte[17 + 4];
+        ulong version = (20190218UL << 32) | (2UL << 24) | (0UL << 16) | (2UL << 8) | 1UL;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload, version);
+        payload[8] = 0;
+        payload[9 + 1] = 2;                        // two length-2 symbols
+        payload[17] = (byte)'a'; payload[18] = (byte)'b';
+        payload[19] = (byte)'c'; payload[20] = (byte)'d';
+
+        var imported = FsstSerializer.ImportFsst8(payload);
+
+        // "ab" -> code 0, "cd" -> code 1, '!' escaped.
+        var data = Encoding.UTF8.GetBytes("abcd!");
+        var compressed = FsstEncoder.Compress(imported, data);
+
+        Assert.Equal(new byte[] { 0x00, 0x01, 0xFF, (byte)'!' }, compressed);
+        Assert.Equal(data, FsstDecoder.FromSymbolTable(imported).Decompress(compressed));
+    }
+
+    [Fact]
+    public void Fsst8_ExportImport_ReencodesIdenticallyWithLength2Symbols()
+    {
+        // The existing round-trip test's corpus trains no length-2 symbols, so it could not catch
+        // the import path losing them. Build the table by hand instead.
+        var table = new SymbolTable();
+        table.Add(Symbol.FromSpan("ab"u8));
+        table.Add(Symbol.FromSpan("cd"u8));
+        table.Finalize(false);
+
+        var imported = FsstSerializer.ImportFsst8(FsstSerializer.ExportFsst8(table));
+        var data = Encoding.UTF8.GetBytes("abcdabcd!cdab");
+
+        Assert.Equal(FsstEncoder.Compress(table, data), FsstEncoder.Compress(imported, data));
+    }
+
+    [Fact]
     public void Fsst8_ImportRejectsTruncatedHeader()
     {
         Assert.Throws<ArgumentException>(() => FsstSerializer.ImportFsst8(new byte[16]));

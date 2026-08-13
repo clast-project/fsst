@@ -104,7 +104,10 @@ public sealed class FsstDecoder
     /// hold the output (size it with <see cref="MaxDecompressedLength"/> to rule this out);
     /// <see cref="OperationStatus.InvalidData"/> if <paramref name="compressed"/> is not a
     /// well-formed FSST8 code stream. <paramref name="written"/> is 0 unless the status is
-    /// <see cref="OperationStatus.Done"/>, so partial output is never surfaced.
+    /// <see cref="OperationStatus.Done"/>. Decoding writes as it goes, so on either failure
+    /// <paramref name="destination"/> may already hold bytes decoded before the problem was
+    /// detected; treat its contents as undefined unless the status is
+    /// <see cref="OperationStatus.Done"/>.
     /// </returns>
     /// <remarks>
     /// Rejects what the Parquet FSST spec's §8.3 decode algorithm calls an error for the 8-bit
@@ -247,7 +250,11 @@ public sealed class FsstDecoder
     /// <param name="destination">Destination buffer for the decompressed bytes. Size with <see cref="MaxDecompressedLength"/> when the uncompressed total is unknown.</param>
     /// <param name="destinationOffsets">Receives <c>compressedLengths.Length + 1</c> prefix-sum offsets; <c>destinationOffsets[0]</c> is always 0 and <c>destinationOffsets[^1]</c> equals <paramref name="totalWritten"/>.</param>
     /// <param name="totalWritten">Total bytes written to <paramref name="destination"/>.</param>
-    /// <returns><c>false</c> if either output buffer is too small (and <paramref name="totalWritten"/> is set to 0); otherwise <c>true</c>.</returns>
+    /// <returns><c>false</c> if either output buffer is too small, or any value is malformed (and
+    /// <paramref name="totalWritten"/> is set to 0); otherwise <c>true</c>. Use
+    /// <see cref="DecompressBatch"/> to tell the two apart. <paramref name="destination"/> and
+    /// <paramref name="destinationOffsets"/> may be partly overwritten when this returns
+    /// <c>false</c>.</returns>
     public bool TryDecompressBatch(
         ReadOnlySpan<byte> compressedData,
         ReadOnlySpan<int> compressedLengths,

@@ -118,7 +118,8 @@ switch (decoder.Decompress(compressed, dst, out int written))
 
 `TryDecompress` returns false for either, and the allocating overloads (`Decompress(compressed)`,
 `DecompressString`) throw `InvalidDataException` on corruption. `written` is 0 unless the status is
-`Done`, so partial output is never surfaced.
+`Done` — but decoding writes as it goes, so the destination may already hold bytes decoded before
+the problem was detected. Treat its contents as undefined unless the status is `Done`.
 
 Rejected: a code at or beyond the symbol count, an escape marker with no literal after it, and — for
 FSST16 — an odd-length stream or a literal above 255. These are the cases the Parquet FSST spec's

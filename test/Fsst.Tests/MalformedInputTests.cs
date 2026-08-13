@@ -202,6 +202,30 @@ public class MalformedInputTests
 
         Assert.Throws<InvalidDataException>(() => decoder8.Decompress(bad8));
         Assert.Throws<InvalidDataException>(() => decoder8.DecompressString(bad8));
+
+        var decoder12 = Fsst12Decoder.FromSymbolMap(new SymbolMap());
+        byte[] bad12 = [0x00]; // 3k+1 bytes cannot hold a whole number of codes
+
+        Assert.Throws<InvalidDataException>(() => decoder12.Decompress(bad12));
+        Assert.Throws<InvalidDataException>(() => decoder12.DecompressString(bad12));
+        Assert.Throws<InvalidDataException>(() => decoder12.Decompress(bad12, new ListBufferWriter()));
+    }
+
+    [Fact]
+    public void DestinationMayBePartlyWrittenWhenCorruptionIsDetectedLate()
+    {
+        // The contract is that `written` is 0, not that the buffer is untouched: decoding writes as
+        // it goes, so bytes decoded before the bad code remain. Pinned so the docs stay honest.
+        var decoder = Decoder16("ab"u8.ToArray());
+        var dst = new byte[32];
+        for (int i = 0; i < dst.Length; i++) dst[i] = 0xCC;
+
+        // Two good codes, then one past the table.
+        Assert.Equal(OperationStatus.InvalidData,
+            decoder.Decompress([0x00, 0x00, 0x00, 0x00, 0x09, 0x00], dst, out int written));
+
+        Assert.Equal(0, written);
+        Assert.Equal("abab"u8.ToArray(), dst.AsSpan(0, 4).ToArray());
     }
 
     [Fact]

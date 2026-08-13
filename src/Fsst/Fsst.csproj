@@ -25,7 +25,7 @@
     <FileVersion Condition="!$(Version.Contains('-'))">$(Version)</FileVersion>
     <Authors>clast-project</Authors>
     <Company>clast-project</Company>
-    <Description>FSST (Fast Static Symbol Table) string compression for .NET. Supports both FSST8 (1-byte codes) and FSST12 (12-bit codes) variants.</Description>
+    <Description>FSST (Fast Static Symbol Table) string compression for .NET. Supports the FSST8 (1-byte codes), FSST12 (12-bit codes) and FSST16 (2-byte codes) variants.</Description>
     <PackageTags>fsst;compression;string;columnar;dictionary</PackageTags>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>

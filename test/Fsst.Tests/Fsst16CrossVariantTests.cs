@@ -21,12 +21,11 @@ namespace Clast.Fsst.Tests;
 /// cwida-produced payload can be dropped into <see cref="LiftCwidaPayload"/> unchanged when one
 /// becomes available.
 ///
-/// Coverage limit worth knowing: trained FSST8 tables in practice hold no length-2 symbols (the
-/// trainer's candidate doubling goes 1 -> 2 -> 4 and 2-byte candidates lose on gain), so the
-/// comparisons below exercise lengths 1 and 3-8 plus escapes. The 2-byte prefix path is covered
-/// instead by <see cref="CwidaPayload_Length2Symbols_CompressToTheExpectedCodes"/> against
-/// expected bytes, because the FSST8 side of that comparison is currently broken — see the
-/// skipped <see cref="SameSymbolSet_ProducesIdenticalParse_ForLength2Symbols"/>.
+/// Coverage note: trained FSST8 tables in practice hold no length-2 symbols (the trainer's
+/// candidate doubling goes 1 -> 2 -> 4 and 2-byte candidates lose on gain), so the corpus-driven
+/// comparisons exercise lengths 1 and 3-8 plus escapes. The 2-byte prefix path is covered by
+/// <see cref="SameSymbolSet_ProducesIdenticalParse_ForLength2Symbols"/>, which builds that case
+/// explicitly from a cwida payload.
 /// </summary>
 public class Fsst16CrossVariantTests
 {
@@ -187,11 +186,7 @@ public class Fsst16CrossVariantTests
         Assert.Equal(data, Fsst16Decoder.FromSymbolTable(table16).Decompress(compressed16));
     }
 
-    [Fact(Skip = "Blocked on a pre-existing FSST8 defect: SymbolTable.FindLongestSymbol tests " +
-                 "ShortCodes against Symbol.CodeBase (256), but after Finalize every real code is " +
-                 "0..254, so the branch never fires and length-2 symbols are unreachable when " +
-                 "compressing. cwida avoids this by reading shortCodes[] directly in its compression " +
-                 "loop and using findLongestSymbol only during table construction. Un-skip once fixed.")]
+    [Fact]
     public void SameSymbolSet_ProducesIdenticalParse_ForLength2Symbols()
     {
         var table8 = FsstSerializer.ImportFsst8(LiftCwidaPayload());
@@ -199,7 +194,6 @@ public class Fsst16CrossVariantTests
 
         var data = Encoding.UTF8.GetBytes("abcd!abZcd");
 
-        // FSST8 currently escapes every byte here; FSST16 emits codes 0 and 1.
         Assert.Equal(
             Fsst8Codes(FsstEncoder.Compress(table8, data)),
             Fsst16Codes(Fsst16Encoder.Compress(table16, data)));

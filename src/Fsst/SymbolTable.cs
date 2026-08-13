@@ -162,9 +162,14 @@ public sealed class SymbolTable
 
         if (s.Length() >= 2)
         {
-            int code = ShortCodes[s.First2()] & Symbol.CodeMask;
-            if (code >= Symbol.CodeBase)
-                return code;
+            // Test the packed length field, not the code. Real symbols occupy codes 256+ while the
+            // table is being built, but Finalize renumbers them to 0..254 — so a code-vs-CodeBase
+            // test silently stops matching every length-2 symbol on a finalized table, which is
+            // exactly the table the encoder compresses with. Only length-2 symbols are ever written
+            // into ShortCodes, so a length field of 2 is a real hit in either code space.
+            ushort shortCode = ShortCodes[s.First2()];
+            if ((shortCode >> Symbol.LenBits) >= 2)
+                return shortCode & Symbol.CodeMask;
         }
 
         return ByteCodes[s.First()] & Symbol.CodeMask;
@@ -285,10 +290,13 @@ public sealed class SymbolTable
             LenHisto[0]++;
         }
 
-        // Uncovered 2-byte prefixes fall back to the first byte's ByteCodes entry.
+        // Uncovered 2-byte prefixes fall back to the first byte's ByteCodes entry. The codes written
+        // above are already finalized (0..nSymbols-1), so "covered" cannot be tested against
+        // CodeBase the way Finalize does it — that would treat every length-2 symbol just installed
+        // as uncovered and clobber it. Test the length field instead.
         for (int i = 0; i < 65536; i++)
         {
-            if ((ShortCodes[i] & Symbol.CodeMask) < Symbol.CodeBase)
+            if ((ShortCodes[i] >> Symbol.LenBits) < 2)
                 ShortCodes[i] = ByteCodes[i & 0xFF];
         }
 

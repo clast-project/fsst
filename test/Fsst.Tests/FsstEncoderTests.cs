@@ -8,6 +8,61 @@ namespace Clast.Fsst.Tests;
 public class FsstEncoderTests
 {
     [Fact]
+    public void Compress_UsesLength2Symbols()
+    {
+        // Regression for #2. Finalize renumbers real codes to 0..254, so FindLongestSymbol's
+        // ShortCodes test could not be a code-vs-CodeBase comparison: length-2 symbols were in the
+        // table but unreachable, and their bytes were escaped instead — 2x expansion where 2x
+        // compression was available.
+        var table = new SymbolTable();
+        Assert.True(table.Add(Symbol.FromSpan("ab"u8)));
+        table.Finalize(false);
+
+        var compressed = FsstEncoder.Compress(table, Encoding.UTF8.GetBytes("abab"));
+
+        Assert.Equal(2, compressed.Length);
+        Assert.Equal(Encoding.UTF8.GetBytes("abab"), FsstDecoder.FromSymbolTable(table).Decompress(compressed));
+    }
+
+    [Fact]
+    public void Compress_Length2SymbolsCoexistWithEscapesAndLongerSymbols()
+    {
+        var table = new SymbolTable();
+        Assert.True(table.Add(Symbol.FromSpan("ab"u8)));    // length 2 -> ShortCodes
+        Assert.True(table.Add(Symbol.FromSpan("xyz"u8)));   // length 3 -> hash table
+        Assert.True(table.Add(Symbol.FromByte((byte)'q', 0)));
+        table.Finalize(false);
+
+        var data = Encoding.UTF8.GetBytes("abxyzq!ab");
+        var compressed = FsstEncoder.Compress(table, data);
+
+        // ab, xyz, q, escape '!', ab  ->  4 codes + 1 escape pair = 6 bytes.
+        Assert.Equal(6, compressed.Length);
+        Assert.Equal(data, FsstDecoder.FromSymbolTable(table).Decompress(compressed));
+    }
+
+    [Fact(Skip = "Blocked on #5, a separate defect: Symbol.FromSpan/FromPointer build the probe " +
+                 "with SetCodeLen(CodeMax), and CodeMax (512) masks to code 0 rather than to " +
+                 "CodeMask (511) as cwida uses. The probe's code must be the maximum for the " +
+                 "h.Icl <= s.Icl ordering test to reduce to a length comparison; at 0 it also " +
+                 "requires the stored code to be 0 whenever lengths are equal. Un-skip once fixed.")]
+    public void Compress_PrefersLongerSymbolOverLength2Prefix()
+    {
+        var table = new SymbolTable();
+        Assert.True(table.Add(Symbol.FromSpan("ab"u8)));
+        Assert.True(table.Add(Symbol.FromSpan("abcd"u8)));
+        table.Finalize(false);
+
+        // The 4-byte symbol must still win; reaching ShortCodes must not shadow the hash table.
+        // Fails today only because the input is exactly 4 bytes, so the probe length equals the
+        // stored symbol's and #5's zeroed code field decides the comparison.
+        var compressed = FsstEncoder.Compress(table, Encoding.UTF8.GetBytes("abcd"));
+
+        Assert.Single(compressed);
+        Assert.Equal(Encoding.UTF8.GetBytes("abcd"), FsstDecoder.FromSymbolTable(table).Decompress(compressed));
+    }
+
+    [Fact]
     public void BuildSymbolTable_EmptyInput_ReturnsEmptyTable()
     {
         var table = FsstEncoder.BuildSymbolTable([]);

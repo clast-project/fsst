@@ -105,23 +105,12 @@ internal struct Symbol
     }
 
     /// <summary>Create a symbol from a span of bytes (up to 8).</summary>
-    public static Symbol FromSpan(ReadOnlySpan<byte> input)
+    public static unsafe Symbol FromSpan(ReadOnlySpan<byte> input)
     {
-        var s = new Symbol();
         int len = Math.Min(input.Length, MaxLength);
-        s.Val = 0;
-        if (len >= 8)
-        {
-            s.Val = Unsafe.ReadUnaligned<ulong>(ref MemoryMarshal.GetReference(input));
-        }
-        else
-        {
-            // Copy byte by byte for short spans
-            Span<byte> buf = stackalloc byte[8];
-            buf.Clear();
-            input[..len].CopyTo(buf);
-            s.Val = Unsafe.ReadUnaligned<ulong>(ref buf[0]);
-        }
+        var s = new Symbol();
+        fixed (byte* ptr = input)
+            s.Val = len >= 8 ? Unsafe.ReadUnaligned<ulong>(ptr) : LoadTail(ptr, len);
         s.SetProbeLen(len);
         return s;
     }
@@ -129,22 +118,47 @@ internal struct Symbol
     /// <summary>Create a symbol from a pointer and length.</summary>
     public static unsafe Symbol FromPointer(byte* ptr, int available)
     {
+        int len = available < MaxLength ? available : MaxLength;
         var s = new Symbol();
-        int len = Math.Min(available, MaxLength);
-        s.Val = 0;
-        if (available >= 8)
-        {
-            s.Val = Unsafe.ReadUnaligned<ulong>(ptr);
-        }
-        else
-        {
-            Span<byte> buf = stackalloc byte[8];
-            buf.Clear();
-            new ReadOnlySpan<byte>(ptr, len).CopyTo(buf);
-            s.Val = Unsafe.ReadUnaligned<ulong>(ref buf[0]);
-        }
+        s.Val = available >= 8 ? Unsafe.ReadUnaligned<ulong>(ptr) : LoadTail(ptr, len);
         s.SetProbeLen(len);
         return s;
+    }
+
+    /// <summary>
+    /// Assemble fewer than 8 bytes into a little-endian <see cref="ulong"/>, zero-padded.
+    /// </summary>
+    /// <remarks>
+    /// Reads as wide as is safe rather than going through a cleared stack buffer. This runs for the
+    /// last few bytes of every value, so for the short values FSST is aimed at it is a large share
+    /// of all probe positions, not a rare tail case.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static unsafe ulong LoadTail(byte* ptr, int len)
+    {
+        if (len >= 4)
+        {
+            ulong v = Unsafe.ReadUnaligned<uint>(ptr);
+            if (len >= 6)
+            {
+                v |= (ulong)Unsafe.ReadUnaligned<ushort>(ptr + 4) << 32;
+                if (len == 7) v |= (ulong)ptr[6] << 48;
+            }
+            else if (len == 5)
+            {
+                v |= (ulong)ptr[4] << 32;
+            }
+            return v;
+        }
+
+        if (len >= 2)
+        {
+            ulong v = Unsafe.ReadUnaligned<ushort>(ptr);
+            if (len == 3) v |= (ulong)ptr[2] << 16;
+            return v;
+        }
+
+        return len == 1 ? ptr[0] : 0UL;
     }
 
     /// <summary>Concatenate two symbols, truncating at 8 bytes.</summary>

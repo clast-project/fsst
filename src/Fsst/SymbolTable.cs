@@ -149,6 +149,34 @@ public sealed class SymbolTable
         return true;
     }
 
+    /// <summary>
+    /// As <see cref="FindLongestSymbol"/>, but returns the match packed as
+    /// <c>(length &lt;&lt; LenBits) | code</c> — the same layout <see cref="ShortCodes"/> and
+    /// <see cref="ByteCodes"/> already store. The compressor needs both halves for every input
+    /// position, and taking the length from here avoids a second indexed load into
+    /// <see cref="Symbols"/> per iteration.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal int FindLongestPacked(Symbol s)
+    {
+        int idx = (int)(s.Hash() & (HashTabSize - 1));
+        ref Symbol h = ref HashTab[idx];
+        if (h.Icl <= s.Icl &&
+            h.Val == (s.Val & (0xFFFFFFFFFFFFFFFF >> (int)(byte)h.Icl)))
+        {
+            return (int)(((h.Icl >> 28) << Symbol.LenBits) | ((h.Icl >> 16) & Symbol.CodeMask));
+        }
+
+        if (s.Length() >= 2)
+        {
+            ushort shortCode = ShortCodes[s.First2()];
+            if ((shortCode >> Symbol.LenBits) >= 2)
+                return shortCode;
+        }
+
+        return ByteCodes[s.First()];
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal int FindLongestSymbol(Symbol s)
     {

@@ -31,6 +31,23 @@ internal struct Symbol
 
     public const uint IclFree = (15u << 28) | ((uint)CodeMask << 16);
 
+    /// <summary>
+    /// Code carried by a probe symbol — one built from input bytes rather than read from a table.
+    /// <para>
+    /// <c>FindLongestSymbol</c> decides a hash-table hit with <c>h.Icl &lt;= s.Icl</c>, which is meant
+    /// to read as "the stored symbol is no longer than the input available here". Length occupies the
+    /// top bits so it dominates, but when the two lengths are equal the comparison falls through to
+    /// the code field — so the probe must carry a code at least as large as any stored code, or a
+    /// stored symbol becomes unreachable exactly when it fits the input snugly.
+    /// </para>
+    /// <para>
+    /// This is the largest value the 12-bit code field can hold, which covers both code spaces:
+    /// FSST8 assigns at most 510 (<see cref="CodeMask"/> would do), and FSST12 assigns up to 4095
+    /// (it would not). Probe codes are only ever compared, never read back.
+    /// </para>
+    /// </summary>
+    public const int ProbeCode = 0xFFF;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public readonly int Length() => (int)(Icl >> 28);
 
@@ -44,6 +61,17 @@ internal struct Symbol
     public void SetCodeLen(int code, int len)
     {
         Icl = ((ulong)(uint)len << 28) | ((ulong)(uint)(code & CodeMask) << 16) | (uint)((8 - len) * 8);
+    }
+
+    /// <summary>
+    /// Stamp the length of a symbol that has no code of its own yet — a probe built from input, or a
+    /// concatenation still being scored. Uses <see cref="ProbeCode"/> rather than
+    /// <see cref="SetCodeLen"/>, whose 9-bit mask cannot represent it.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void SetProbeLen(int len)
+    {
+        Icl = ((ulong)(uint)len << 28) | ((ulong)ProbeCode << 16) | (uint)((8 - len) * 8);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -94,7 +122,7 @@ internal struct Symbol
             input[..len].CopyTo(buf);
             s.Val = Unsafe.ReadUnaligned<ulong>(ref buf[0]);
         }
-        s.SetCodeLen(CodeMax, len);
+        s.SetProbeLen(len);
         return s;
     }
 
@@ -115,7 +143,7 @@ internal struct Symbol
             new ReadOnlySpan<byte>(ptr, len).CopyTo(buf);
             s.Val = Unsafe.ReadUnaligned<ulong>(ref buf[0]);
         }
-        s.SetCodeLen(CodeMax, len);
+        s.SetProbeLen(len);
         return s;
     }
 
@@ -128,7 +156,7 @@ internal struct Symbol
 
         var s = new Symbol();
         s.Val = a.Val | (b.Val << (lenA * 8));
-        s.SetCodeLen(CodeMax, total);
+        s.SetProbeLen(total);
         return s;
     }
 

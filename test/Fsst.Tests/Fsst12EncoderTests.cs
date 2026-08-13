@@ -60,6 +60,31 @@ public class Fsst12EncoderTests
     }
 
     [Fact]
+    public void Compress_MatchesSymbolAtCodeAboveTheFsst8CodeSpace()
+    {
+        // Regression for #5, FSST12 side. FSST12 assigns codes up to 4095, so the probe code has to
+        // be the full 12-bit maximum -- Symbol.CodeMask (511) would leave everything above code 511
+        // unreachable whenever the probe ties it on length.
+        var map = new SymbolMap();
+
+        // Burn codes with 2-byte symbols: those live in ShortCodes, so unlike 3+ byte symbols they
+        // cannot collide with each other in the lossy hash. High bytes keep them clear of the target.
+        for (int i = 0; i < 400; i++)
+            Assert.True(map.Add(Symbol.FromSpan([(byte)(0x80 + i / 20), (byte)(0x80 + i % 20)])));
+
+        var target = "abcdefgh"u8.ToArray();
+        Assert.True(map.Add(Symbol.FromSpan(target)));
+
+        int code = SymbolMap.CodeBase12 + map.NSymbols - 1;
+        Assert.True(code > Symbol.CodeMask, $"expected a code above {Symbol.CodeMask}, got {code}");
+
+        var compressed = Fsst12Encoder.Compress(map, target);
+
+        Assert.Equal(2, compressed.Length); // one 12-bit code, padded to 2 bytes
+        Assert.Equal(target, Fsst12Decoder.FromSymbolMap(map).Decompress(compressed));
+    }
+
+    [Fact]
     public void Compress_WithSymbols_Compresses()
     {
         var repeated = string.Concat(Enumerable.Repeat("abcdefgh", 200));

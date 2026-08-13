@@ -3,6 +3,9 @@
 
 
 
+using System.Buffers;
+using System.IO;
+
 namespace Clast.Fsst.Tests;
 
 public class Fsst16DecoderTests
@@ -66,38 +69,40 @@ public class Fsst16DecoderTests
     }
 
     [Fact]
-    public void Decompress_DanglingEscapeIsIgnored()
+    public void Decompress_DanglingEscapeIsRejected()
+    {
+        // Was silently ignored until the spec's §8.3 checks landed; a trailing escape is corruption
+        // (§5.2), not a stream that happens to end early.
+        var (lengths, values) = Pack("ab"u8.ToArray());
+        var decoder = Fsst16Decoder.FromSymbols(lengths, values);
+
+        Assert.Throws<InvalidDataException>(() => decoder.Decompress([0x00, 0x00, 0xFF, 0xFF]));
+        Assert.Throws<InvalidDataException>(() => decoder.Decompress([0x00, 0x00, 0xFF, 0xFF, 0x5A]));
+    }
+
+    [Fact]
+    public void Decompress_TrailingOddByteIsRejected()
     {
         var (lengths, values) = Pack("ab"u8.ToArray());
         var decoder = Fsst16Decoder.FromSymbols(lengths, values);
 
-        Assert.Equal("ab"u8.ToArray(), decoder.Decompress([0x00, 0x00, 0xFF, 0xFF]));
-        Assert.Equal("ab"u8.ToArray(), decoder.Decompress([0x00, 0x00, 0xFF, 0xFF, 0x5A]));
+        Assert.Throws<InvalidDataException>(() => decoder.Decompress([0x00, 0x00, 0x07]));
     }
 
     [Fact]
-    public void Decompress_TrailingOddByteIsIgnored()
-    {
-        var (lengths, values) = Pack("ab"u8.ToArray());
-        var decoder = Fsst16Decoder.FromSymbols(lengths, values);
-
-        Assert.Equal("ab"u8.ToArray(), decoder.Decompress([0x00, 0x00, 0x07]));
-    }
-
-    [Fact]
-    public void Decompress_UnusedCodeEmitsNothing()
+    public void Decompress_UnusedCodeIsRejected()
     {
         var (lengths, values) = Pack("ab"u8.ToArray(), []);
         var decoder = Fsst16Decoder.FromSymbols(lengths, values);
 
-        Assert.Equal("ab"u8.ToArray(), decoder.Decompress([0x01, 0x00, 0x00, 0x00]));
+        Assert.Throws<InvalidDataException>(() => decoder.Decompress([0x01, 0x00, 0x00, 0x00]));
     }
 
     [Fact]
-    public void Decompress_UnusedCodeDoesNotTouchTheDestination()
+    public void Decompress_UnusedCodeAndOutOfRangeCodeAgree()
     {
-        // A zero-length slot must behave exactly like an out-of-range code: emit nothing and
-        // write nothing. Both are unreachable in well-formed data, so they should agree.
+        // A zero-length slot and a code past the table are the same kind of corruption, and neither
+        // may write to the destination on the way to saying so.
         var (lengths, values) = Pack("ab"u8.ToArray(), []);
         var decoder = Fsst16Decoder.FromSymbols(lengths, values);
 
@@ -105,8 +110,8 @@ public class Fsst16DecoderTests
         var outOfRange = new byte[32];
         for (int i = 0; i < 32; i++) zeroLengthSlot[i] = outOfRange[i] = 0xCC;
 
-        Assert.True(decoder.TryDecompress([0x01, 0x00], zeroLengthSlot, out int a)); // slot 1, length 0
-        Assert.True(decoder.TryDecompress([0x05, 0x00], outOfRange, out int b));     // no slot 5 at all
+        Assert.Equal(OperationStatus.InvalidData, decoder.Decompress([0x01, 0x00], zeroLengthSlot, out int a));
+        Assert.Equal(OperationStatus.InvalidData, decoder.Decompress([0x05, 0x00], outOfRange, out int b));
 
         Assert.Equal(0, a);
         Assert.Equal(0, b);

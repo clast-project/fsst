@@ -365,6 +365,17 @@ public sealed class SymbolTable
 
         SuffixLim = rsum[1];
 
+        // Length-2 codes occupy [rsum[1], rsum[2]) and are filled from both ends: unsuffixed ones
+        // ascending from SuffixLim, suffixed ones descending from the top of the block. The
+        // descending counter must be its OWN variable, not rsum[2] itself — rsum[2] is also the
+        // ascending allocator for length-3 codes, so decrementing it in place hands the next
+        // length-3 symbol a code already given to a length-2 symbol. Two symbols then share a code:
+        // the later write wins in Symbols[], while ShortCodes still points at the code for the
+        // length-2 symbol, so the compressor emits that code for a two-byte match and the decoder
+        // expands it to the length-3 symbol. Requires a table holding both a suffixed length-2
+        // symbol and a length-3 symbol to trigger, which is why it stayed latent.
+        int twoByteHigh = rsum[2];
+
         // Process symbols
         for (int i = zt; i < NSymbols; i++)
         {
@@ -388,7 +399,7 @@ public sealed class SymbolTable
                 if (opt != 0)
                     newCode[i] = SuffixLim++;
                 else
-                    newCode[i] = --rsum[2]; // j starts at rsum[2], goes down
+                    newCode[i] = --twoByteHigh;
             }
             else
             {

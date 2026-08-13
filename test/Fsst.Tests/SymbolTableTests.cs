@@ -161,6 +161,74 @@ public class SymbolTableTests
     }
 
     [Fact]
+    public void SymbolTable_Finalize_GivesSuffixedLength2AndLength3SymbolsDistinctCodes()
+    {
+        // Regression for #16. "d-" is suffixed — "d-1" shares its first two bytes — so it takes a
+        // code from the top of the length-2 block, counting down. That counter used to be rsum[2]
+        // itself, which is also where length-3 codes are handed out counting up, so both symbols
+        // landed on code 0: ShortCodes still pointed there for "d-", but the slot held "d-1", so
+        // compressing "d-" produced a code that decoded to "d-1".
+        var table = new SymbolTable();
+        Assert.True(table.Add(Symbol.FromSpan("d-"u8)));
+        Assert.True(table.Add(Symbol.FromSpan("d-1"u8)));
+        table.Finalize(false);
+
+        AssertFinalizedSymbolsAre(table, "d-"u8.ToArray(), "d-1"u8.ToArray());
+
+        var data = Encoding.UTF8.GetBytes("d-d-1");
+        var compressed = FsstEncoder.Compress(table, data);
+        Assert.Equal(2, compressed.Length);
+        Assert.Equal(data, FsstDecoder.FromSymbolTable(table).Decompress(compressed));
+    }
+
+    [Fact]
+    public void SymbolTable_Finalize_PlacesEverySymbolOnItsOwnCode()
+    {
+        // Every symbol added must survive at its own code in 0..NSymbols-1, across a table mixing
+        // suffixed and unsuffixed length-2 symbols with the other lengths.
+        byte[][] symbols =
+        [
+            "ab"u8.ToArray(), "abc"u8.ToArray(),        // "ab" is suffixed by "abc"
+            "xy"u8.ToArray(),                           // unsuffixed length 2
+            "pq"u8.ToArray(), "pqrs"u8.ToArray(),       // "pq" is suffixed by a length-4
+            "mnopqrs"u8.ToArray(), "tuvwxyza"u8.ToArray(),
+            "z"u8.ToArray(),
+        ];
+
+        var table = new SymbolTable();
+        foreach (var s in symbols)
+            Assert.True(table.Add(Symbol.FromSpan(s)));
+        table.Finalize(false);
+
+        AssertFinalizedSymbolsAre(table, symbols);
+    }
+
+    /// <summary>
+    /// Assert that codes <c>0..NSymbols-1</c> hold exactly <paramref name="expected"/>, once each.
+    /// A code collision leaves one slot holding the constructor's placeholder rather than a
+    /// duplicate, so checking the codes alone would not catch it — check the contents.
+    /// </summary>
+    private static void AssertFinalizedSymbolsAre(SymbolTable table, params byte[][] expected)
+    {
+        Assert.Equal(expected.Length, table.NSymbols);
+
+        var actual = new List<string>();
+        for (int i = 0; i < table.NSymbols; i++)
+        {
+            var s = table.Symbols[i];
+            Assert.Equal(i, s.Code());
+            var bytes = new byte[s.Length()];
+            for (int j = 0; j < bytes.Length; j++)
+                bytes[j] = (byte)(s.Val >> (j * 8));
+            actual.Add(Encoding.UTF8.GetString(bytes));
+        }
+
+        Assert.Equal(
+            expected.Select(Encoding.UTF8.GetString).OrderBy(x => x, StringComparer.Ordinal),
+            actual.OrderBy(x => x, StringComparer.Ordinal));
+    }
+
+    [Fact]
     public void SymbolMap_Init_HasCorrectDefaults()
     {
         var map = new SymbolMap();

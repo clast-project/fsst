@@ -13,7 +13,7 @@
   <PropertyGroup Label="Package metadata">
     <PackageId>Clast.Fsst</PackageId>
     <!-- Local default only; release.yml packs with -p:Version=<tag>. -->
-    <Version>0.3.0</Version>
+    <Version>0.3.1</Version>
     <!-- Held across the whole 0.3.x line so consumers don't need a binding
          redirect per patch. Under 0.x semver the minor is the breaking slot,
          so bump this to 0.4.0.0 at the next breaking release. Hardcoded rather
@@ -27,7 +27,13 @@
     <Company>clast-project</Company>
     <Description>FSST (Fast Static Symbol Table) string compression for .NET. Supports the FSST8 (1-byte codes), FSST12 (12-bit codes) and FSST16 (2-byte codes) variants.</Description>
     <PackageTags>fsst;compression;string;columnar;dictionary</PackageTags>
-    <PackageReleaseNotes>0.3.0 adds FSST16 (2-byte codes, up to 65,535 symbols, symbols up to 16 bytes) — the variant the Parquet FSST proposal calls FSST_16.
+    <PackageReleaseNotes>0.3.1 fixes FSST8 data corruption on write. Upgrade from 0.3.0 is strongly recommended.
+
+- SymbolTable.Finalize could assign one code to two symbols, whenever a trained table held both a length-2 symbol that is a prefix of a longer symbol and a length-3 symbol. One symbol was lost, and the compressor emitted its code for input matching the other — so compressing and decompressing with the same table returned altered bytes. Present since 0.1.0, but only reachable from tables 0.3.0's ratio fixes started producing.
+- FSST8 data written by 0.3.0 cannot be recovered and must be re-encoded from source; the lost symbol is absent from the exported table. An affected table also exports a length histogram inconsistent with its symbol payload, so ImportFsst8 on it throws rather than loading. Reading data written by 0.2.0 and earlier was never affected, nor was FSST12 or FSST16, which have no code-renumbering pass.
+- Recovering the lost symbols also recovers the compression they were costing: 3.50x to 4.58x on a synthetic URL corpus.
+
+0.3.0 adds FSST16 (2-byte codes, up to 65,535 symbols, symbols up to 16 bytes) — the variant the Parquet FSST proposal calls FSST_16.
 
 Breaking:
 - TryDecompress now returns false for malformed input as well as a too-small destination, where it previously decoded as much as it could. The new Decompress overload returns OperationStatus so the two are distinguishable, and the allocating overloads throw InvalidDataException on corruption.

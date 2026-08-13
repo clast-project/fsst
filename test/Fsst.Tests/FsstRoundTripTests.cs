@@ -171,6 +171,51 @@ public class FsstRoundTripTests
     }
 
     [Fact]
+    public void Fsst8_RoundTrip_TrainedOnRecordLikeValues()
+    {
+        // Regression for #16, reported as "0.3.0 corrupts FSST8 on write". Training on this corpus
+        // produces a table holding both a suffixed length-2 symbol and length-3 symbols, which
+        // Finalize gave overlapping codes — 38 of the 42 values came back altered.
+        var values = new byte[42][];
+        for (int i = 0; i < values.Length; i++)
+            values[i] = Encoding.UTF8.GetBytes($"record-{i}-payload-{i % 11}");
+
+        var table = FsstEncoder.BuildSymbolTable(values);
+        var decoder = FsstDecoder.FromSymbolTable(table);
+
+        foreach (var value in values)
+            Assert.Equal(value, decoder.Decompress(FsstEncoder.Compress(table, value)));
+    }
+
+    [Fact]
+    public void Fsst8_RoundTrip_RandomCorporaOverSmallAlphabets()
+    {
+        // Small alphabets make near-duplicate short symbols likely, which is what drives symbols
+        // into the suffixed length-2 class that #16 mis-numbered.
+        var rng = new Random(12345);
+        const string Alphabet = "abcdefghijklmnopqrstuvwxyz0123456789-_/.:";
+
+        for (int trial = 0; trial < 200; trial++)
+        {
+            int alphabetSize = 2 + rng.Next(Alphabet.Length - 1);
+            var values = new byte[1 + rng.Next(60)][];
+            for (int i = 0; i < values.Length; i++)
+            {
+                var chars = new char[rng.Next(40)];
+                for (int j = 0; j < chars.Length; j++)
+                    chars[j] = Alphabet[rng.Next(alphabetSize)];
+                values[i] = Encoding.UTF8.GetBytes(new string(chars));
+            }
+
+            var table = FsstEncoder.BuildSymbolTable(values);
+            var decoder = FsstDecoder.FromSymbolTable(table);
+
+            foreach (var value in values)
+                Assert.Equal(value, decoder.Decompress(FsstEncoder.Compress(table, value)));
+        }
+    }
+
+    [Fact]
     public void Fsst12_RoundTrip_LongString()
     {
         var rng = new Random(42);

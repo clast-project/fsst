@@ -76,17 +76,50 @@ public class Fsst16EncoderTests
         var table = new SymbolTable16(16);
         var result = Fsst16Encoder.Compress(table, [0x41, 0x42]);
 
-        Assert.Equal(new byte[] { 0xFF, 0xFF, 0x41, 0xFF, 0xFF, 0x42 }, result);
+        Assert.Equal(new byte[] { 0xFF, 0xFF, 0x41, 0x00, 0xFF, 0xFF, 0x42, 0x00 }, result);
         Assert.Equal(new byte[] { 0x41, 0x42 }, Fsst16Decoder.FromSymbolTable(table).Decompress(result));
     }
 
     [Fact]
-    public void MaxCompressedLength_IsThreeTimesInput()
+    public void MaxCompressedLength_IsFourTimesInput()
     {
+        // 2-byte escape marker plus a 2-byte literal, for every input byte.
         Assert.Equal(0, Fsst16Encoder.MaxCompressedLength(0));
-        Assert.Equal(300, Fsst16Encoder.MaxCompressedLength(100));
+        Assert.Equal(400, Fsst16Encoder.MaxCompressedLength(100));
         Assert.Throws<ArgumentOutOfRangeException>(() => Fsst16Encoder.MaxCompressedLength(-1));
         Assert.Throws<ArgumentOutOfRangeException>(() => Fsst16Encoder.MaxCompressedLength(int.MaxValue));
+    }
+
+    [Fact]
+    public void Compress_EscapedOutputIsAlwaysAnEvenNumberOfBytes()
+    {
+        // §8.3 opens with `if len(compressed_bytes) % 2 != 0: error truncated uint16`, so a
+        // conformant reader rejects an odd-length stream outright. A one-byte escape literal would
+        // produce one for any odd number of escapes.
+        var table = new SymbolTable16(16);
+
+        for (int length = 1; length <= 9; length++)
+        {
+            var input = new byte[length];
+            for (int i = 0; i < length; i++) input[i] = (byte)(0x40 + i);
+
+            var compressed = Fsst16Encoder.Compress(table, input);
+
+            Assert.True(compressed.Length % 2 == 0,
+                $"{length}-byte input produced {compressed.Length} compressed bytes, which is odd");
+            Assert.Equal(input, Fsst16Decoder.FromSymbolTable(table).Decompress(compressed));
+        }
+    }
+
+    [Fact]
+    public void Compress_EscapeLiteralHighByteIsZero()
+    {
+        // §8.3 reads the literal with read_uint16_le and errors when it exceeds 255, so the high
+        // byte must be zero even for input bytes above 0x7F.
+        var table = new SymbolTable16(16);
+        var compressed = Fsst16Encoder.Compress(table, [0xFF, 0x80]);
+
+        Assert.Equal(new byte[] { 0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0x80, 0x00 }, compressed);
     }
 
     [Fact]

@@ -8,7 +8,8 @@ namespace Clast.Fsst;
 
 /// <summary>
 /// FSST16 encoder: builds a 16-bit symbol table and compresses using 2-byte little-endian codes.
-/// Code 65,535 escapes one literal byte.
+/// Code 65,535 is the escape marker and is followed by the literal byte as a little-endian
+/// <c>uint16</c> in <c>[0, 255]</c>.
 /// </summary>
 public static class Fsst16Encoder
 {
@@ -22,7 +23,7 @@ public static class Fsst16Encoder
     /// <summary>
     /// Build a 16-bit symbol table from a representative corpus. The result always contains all 256
     /// single-byte symbols — with 65,535 codes available there is no reason to leave a byte to a
-    /// 3-byte escape — so tables from this method never escape and never exceed 2x expansion.
+    /// 4-byte escape — so tables from this method never escape and never exceed 2x expansion.
     /// </summary>
     /// <param name="rows">Sample rows. Only used for training; they need not be the full corpus.</param>
     /// <param name="maxSymbolLength">
@@ -244,8 +245,10 @@ public static class Fsst16Encoder
                 var sym = Symbol16.FromPointer(cur, (int)(end - cur));
                 int code = table.FindLongestSymbol(sym);
 
-                // 2 bytes per code, plus the literal byte an escape carries.
-                compressedSize += code == SymbolTable16.EscCode ? 3 : 2;
+                // 2 bytes per code; an escape costs 4, being the marker plus a uint16 literal.
+                // Unreachable while every candidate table covers all 256 single bytes, but the cost
+                // model should not quietly disagree with what TryCompress emits.
+                compressedSize += code == SymbolTable16.EscCode ? 4 : 2;
                 cur += table.Symbols[code].Length();
             }
         }
@@ -258,14 +261,14 @@ public static class Fsst16Encoder
     /// may produce for an input of the given length.
     /// </summary>
     /// <remarks>
-    /// The bound is 3x: every input byte escaping to a 2-byte marker plus one literal byte. Tables
+    /// The bound is 4x: every input byte escaping to a 2-byte marker plus a 2-byte literal. Tables
     /// from <see cref="BuildSymbolTable"/> cover all 256 bytes and never escape, so they stay at or
-    /// under 2x; the 3x bound only binds for a table that leaves bytes uncovered.
+    /// under 2x; the 4x bound only binds for a table that leaves bytes uncovered.
     /// </remarks>
     public static int MaxCompressedLength(int inputLength)
     {
         if (inputLength < 0) throw new ArgumentOutOfRangeException(nameof(inputLength));
-        long max = (long)inputLength * 3;
+        long max = (long)inputLength * 4;
         if (max > int.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(inputLength), "Input is too large.");
         return (int)max;
@@ -273,9 +276,9 @@ public static class Fsst16Encoder
 
     /// <summary>
     /// Compress <paramref name="input"/> into <paramref name="destination"/> using 16-bit codes.
-    /// Each code is written little-endian; code 65,535 marks an escape and is followed by one
-    /// literal byte. Returns false (and sets <paramref name="written"/> to 0) if
-    /// <paramref name="destination"/> is too small.
+    /// Each code is written little-endian; code 65,535 marks an escape and is followed by the
+    /// literal byte as a little-endian <c>uint16</c> in <c>[0, 255]</c>. Returns false (and sets
+    /// <paramref name="written"/> to 0) if <paramref name="destination"/> is too small.
     /// </summary>
     public static unsafe bool TryCompress(
         SymbolTable16 table, ReadOnlySpan<byte> input, Span<byte> destination, out int written)
@@ -301,11 +304,16 @@ public static class Fsst16Encoder
 
                 if (code == SymbolTable16.EscCode)
                 {
-                    if (outPos + 3 > dstLen) return false;
+                    // The escape marker is followed by the literal as a little-endian uint16 whose
+                    // value is 0..255, not by a bare byte: §8.3 reads it with read_uint16_le. Keeping
+                    // it two bytes is also what makes every stream an even number of bytes, which
+                    // the same section requires.
+                    if (outPos + 4 > dstLen) return false;
                     dstPtr[outPos] = 0xFF;
                     dstPtr[outPos + 1] = 0xFF;
                     dstPtr[outPos + 2] = *cur;
-                    outPos += 3;
+                    dstPtr[outPos + 3] = 0;
+                    outPos += 4;
                     cur++;
                 }
                 else

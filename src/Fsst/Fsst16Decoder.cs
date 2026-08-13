@@ -10,7 +10,8 @@ namespace Clast.Fsst;
 
 /// <summary>
 /// FSST16 decoder: decompresses data compressed with 16-bit codes.
-/// Codes are little-endian <c>uint16</c>; code 65,535 escapes the single literal byte that follows.
+/// Codes are little-endian <c>uint16</c>; code 65,535 is the escape marker and is followed by the
+/// literal byte as a little-endian <c>uint16</c> in <c>[0, 255]</c>.
 /// Instances are immutable after construction and safe to share across threads.
 /// </summary>
 public sealed class Fsst16Decoder
@@ -95,7 +96,7 @@ public sealed class Fsst16Decoder
     {
         if (compressedLength < 0) throw new ArgumentOutOfRangeException(nameof(compressedLength));
         // 2 compressed bytes hold one code; each code emits up to 16 output bytes. An escape costs
-        // 3 compressed bytes for 1 output byte, so it never beats this bound.
+        // 4 compressed bytes for 1 output byte, so it never beats this bound.
         long max = (((long)compressedLength + 1) / 2) * Symbol16.MaxLength;
         if (max > int.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(compressedLength), "Input is too large.");
@@ -130,9 +131,14 @@ public sealed class Fsst16Decoder
 
                 if (code == EscCode)
                 {
-                    if (cur >= end) break; // dangling escape; ignore
+                    // The literal is a little-endian uint16 in [0, 255], not a bare byte (§8.3 reads
+                    // it with read_uint16_le). The high byte is zero in well-formed input; rejecting
+                    // a nonzero one belongs with the rest of the validation work, so take the low
+                    // byte for now rather than desynchronising the stream over it.
+                    if (cur + 2 > end) break; // truncated escape; ignore
                     if (outPos >= dstLen) return false;
-                    outPtr[outPos++] = *cur++;
+                    outPtr[outPos++] = cur[0];
+                    cur += 2;
                     continue;
                 }
 

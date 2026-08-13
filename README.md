@@ -8,6 +8,7 @@ This library is part of the `clast-project`.
 
 - **FSST8** — 1-byte codes (up to 255 symbols) plus an escape byte for unmatched literals.
 - **FSST12** — 12-bit codes packed two-per-three-bytes (up to 4096 symbols, no escape).
+- **FSST16** — 2-byte codes (up to 65,535 symbols, symbols up to 16 bytes), the variant the Parquet FSST proposal calls `FSST_16`.
 - Single-string and batch compress / decompress.
 - Versioned binary format for serializing symbol tables.
 
@@ -60,6 +61,39 @@ Fsst12Decoder decoder = Fsst12Decoder.FromSymbolMap(map);
 byte[] roundtrip      = decoder.Decompress(compressed);
 ```
 
+### FSST16
+
+`Fsst16Encoder` / `Fsst16Decoder` use 16-bit codes written as little-endian `uint16`, with symbols
+of up to 16 bytes. The wider code space and longer symbols usually beat both FSST8 and FSST12 on
+compression ratio; the cost is 2 bytes per code, so FSST16 needs symbols longer than 2 bytes to pay
+for itself, and training is slower.
+
+```csharp
+SymbolTable16 table   = Fsst16Encoder.BuildSymbolTable(corpus);
+byte[] compressed     = Fsst16Encoder.Compress(table, corpus[0]);
+Fsst16Decoder decoder = Fsst16Decoder.FromSymbolTable(table);
+byte[] roundtrip      = decoder.Decompress(compressed);
+```
+
+`BuildSymbolTable` takes an optional `maxSymbolLength` (default 16). The
+[Parquet FSST proposal](https://github.com/apache/parquet-format/issues/531) contradicts itself on
+the `FSST_16` cap — §1.2 says symbols are 1-8 bytes while §3.3, §3.5 and §3.6 all describe 16 — so
+pass `8` to stay valid under the stricter reading:
+
+```csharp
+SymbolTable16 table = Fsst16Encoder.BuildSymbolTable(corpus, maxSymbolLength: 8);
+```
+
+Two properties are worth knowing when writing FSST16 into a container format:
+
+- Tables from `BuildSymbolTable` always contain all 256 single-byte symbols. With 65,535 codes there
+  is no reason to leave a byte to a 3-byte escape sequence, so these tables never escape and never
+  expand beyond 2x. The escape code (65,535, followed by one literal byte) is still decoded, for
+  tables produced elsewhere.
+- Codes are assigned in ascending symbol-length order, so `ExportRaw` emits non-decreasing lengths
+  and a consumer can derive a per-length histogram — and use the codes as-is — without rewriting
+  every code in the compressed stream.
+
 ### Persisting a symbol table
 
 ```csharp
@@ -93,6 +127,20 @@ FsstDecoder decoder = FsstDecoder.FromSymbols(lengths, packedValues);
 
 Parse your container's framing yourself, hand over the per-code lengths and
 8-byte slots, and you get back a decoder.
+
+`SymbolTable16.ExportRaw` / `Fsst16Decoder.FromSymbols` are the FSST16 pair. They use **16-byte**
+slots rather than 8, since FSST16 symbols can be twice as long:
+
+```csharp
+var lengths = new byte[table.SymbolCount];
+var values  = new byte[table.SymbolCount * 16];
+table.ExportRaw(lengths, values);
+
+Fsst16Decoder decoder = Fsst16Decoder.FromSymbols(lengths, values);
+```
+
+There is no `FsstSerializer` support for FSST16: cwida publishes no such format, and the Parquet
+symbol-table page framing belongs in the consumer that writes Parquet.
 
 ## Project layout
 

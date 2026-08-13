@@ -19,6 +19,10 @@ public class DecompressionBenchmarks
     private FsstDecoder _jsonDecoder8 = null!;
     private Fsst12Decoder _textDecoder12 = null!;
     private Fsst12Decoder _jsonDecoder12 = null!;
+    private byte[] _textCompressed16 = null!;
+    private byte[] _jsonCompressed16 = null!;
+    private Fsst16Decoder _textDecoder16 = null!;
+    private Fsst16Decoder _jsonDecoder16 = null!;
 
     [Params(1024, 65536, 1048576)]
     public int Size { get; set; }
@@ -59,6 +63,14 @@ public class DecompressionBenchmarks
         _jsonCompressed12 = Fsst12Encoder.Compress(jsonMap, _jsonData);
         _textDecoder12 = Fsst12Decoder.FromSymbolMap(textMap);
         _jsonDecoder12 = Fsst12Decoder.FromSymbolMap(jsonMap);
+
+        // FSST16
+        var textTable16 = Fsst16Encoder.BuildSymbolTable([_textData]);
+        var jsonTable16 = Fsst16Encoder.BuildSymbolTable([_jsonData]);
+        _textCompressed16 = Fsst16Encoder.Compress(textTable16, _textData);
+        _jsonCompressed16 = Fsst16Encoder.Compress(jsonTable16, _jsonData);
+        _textDecoder16 = Fsst16Decoder.FromSymbolTable(textTable16);
+        _jsonDecoder16 = Fsst16Decoder.FromSymbolTable(jsonTable16);
     }
 
     [Benchmark]
@@ -72,4 +84,10 @@ public class DecompressionBenchmarks
 
     [Benchmark]
     public byte[] Fsst12_Json() => _jsonDecoder12.Decompress(_jsonCompressed12);
+
+    [Benchmark]
+    public byte[] Fsst16_Text() => _textDecoder16.Decompress(_textCompressed16);
+
+    [Benchmark]
+    public byte[] Fsst16_Json() => _jsonDecoder16.Decompress(_jsonCompressed16);
 }

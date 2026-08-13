@@ -17,6 +17,8 @@ public class CompressionBenchmarks
     private SymbolTable _randomTable = null!;
     private SymbolMap _textMap12 = null!;
     private SymbolMap _jsonMap12 = null!;
+    private SymbolTable16 _textTable16 = null!;
+    private SymbolTable16 _jsonTable16 = null!;
 
     [Params(1024, 65536, 1048576)]
     public int Size { get; set; }
@@ -56,6 +58,10 @@ public class CompressionBenchmarks
         // Build FSST12 tables
         _textMap12 = Fsst12Encoder.BuildSymbolTable([_textData]);
         _jsonMap12 = Fsst12Encoder.BuildSymbolTable([_jsonData]);
+
+        // Build FSST16 tables
+        _textTable16 = Fsst16Encoder.BuildSymbolTable([_textData]);
+        _jsonTable16 = Fsst16Encoder.BuildSymbolTable([_jsonData]);
     }
 
     [Benchmark]
@@ -72,4 +78,10 @@ public class CompressionBenchmarks
 
     [Benchmark]
     public byte[] Fsst12_Json() => Fsst12Encoder.Compress(_jsonMap12, _jsonData);
+
+    [Benchmark]
+    public byte[] Fsst16_Text() => Fsst16Encoder.Compress(_textTable16, _textData);
+
+    [Benchmark]
+    public byte[] Fsst16_Json() => Fsst16Encoder.Compress(_jsonTable16, _jsonData);
 }

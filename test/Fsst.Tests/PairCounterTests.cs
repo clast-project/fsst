@@ -69,6 +69,30 @@ public class PairCounterTests
             Assert.Equal(kv.Value, drained[kv.Key]);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(1000)]
+    [InlineData(-8)]
+    public void RejectsCapacityThatIsNotAPowerOfTwo(int capacity)
+    {
+        // Indexing masks with capacity-1, so a non-power-of-two would make linear probing skip
+        // slots and spin forever on a table with room. Better to fail in the constructor.
+        Assert.Throws<ArgumentException>(() => new PairCounter(capacity));
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(16)]
+    [InlineData(1 << 13)]
+    public void AcceptsPowerOfTwoCapacities(int capacity)
+    {
+        var counter = new PairCounter(capacity);
+        for (int i = 0; i < 500; i++) counter.Increment(i, i + 1);
+        Assert.Equal(500, counter.Count);
+    }
+
     [Fact]
     public void EmptyCounterHasNoEntries()
     {
@@ -81,6 +105,15 @@ public class PairCounterTests
 public class Symbol16CandidateSetTests
 {
     private static Symbol16 Sym(string s) => Symbol16.FromSpan(System.Text.Encoding.ASCII.GetBytes(s));
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3)]
+    [InlineData(1000)]
+    public void RejectsCapacityThatIsNotAPowerOfTwo(int capacity)
+    {
+        Assert.Throws<ArgumentException>(() => new Symbol16CandidateSet(capacity));
+    }
 
     [Fact]
     public void GainsAccumulatePerDistinctSymbol()

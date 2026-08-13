@@ -25,6 +25,12 @@ internal sealed class PairCounter
 
     public PairCounter(int initialCapacity = 1 << 13)
     {
+        // Slots are indexed with `& _mask`, so a capacity that is not a power of two makes linear
+        // probing skip slots: it can then spin forever on a table that still has room. Fail here
+        // rather than hang later.
+        if (initialCapacity < 2 || (initialCapacity & (initialCapacity - 1)) != 0)
+            throw new ArgumentException("Capacity must be a power of two, and at least 2.", nameof(initialCapacity));
+
         _keys = new long[initialCapacity];
         _counts = new int[initialCapacity];
         _mask = initialCapacity - 1;

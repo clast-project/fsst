@@ -134,10 +134,6 @@ public sealed class SymbolTable16
     }
 
     /// <summary>
-    /// Greedy longest-match lookup: 3+ byte symbols via the lossy hash, then 2-byte, then 1-byte.
-    /// Returns <see cref="EscCode"/> when the leading byte has no symbol at all.
-    /// </summary>
-    /// <summary>
     /// As <see cref="FindLongestSymbol"/>, but returns <c>(length &lt;&lt; 16) | code</c>. The
     /// compressor needs both for every input position, and a Symbol16 is 24 bytes, so taking the
     /// length from here rather than re-indexing <see cref="Symbols"/> saves a strided load per
@@ -166,6 +162,10 @@ public sealed class SymbolTable16
         return (1 << 16) | ByteCodes[s.First()];
     }
 
+    /// <summary>
+    /// Greedy longest-match lookup: 3+ byte symbols via the lossy hash, then 2-byte, then 1-byte.
+    /// Returns <see cref="EscCode"/> when the leading byte has no symbol at all.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal int FindLongestSymbol(in Symbol16 s)
     {

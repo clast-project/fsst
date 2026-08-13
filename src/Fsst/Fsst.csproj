@@ -13,12 +13,12 @@
   <PropertyGroup Label="Package metadata">
     <PackageId>Clast.Fsst</PackageId>
     <!-- Local default only; release.yml packs with -p:Version=<tag>. -->
-    <Version>0.2.0</Version>
-    <!-- Held across the whole 0.2.x line so consumers don't need a binding
+    <Version>0.3.0</Version>
+    <!-- Held across the whole 0.3.x line so consumers don't need a binding
          redirect per patch. Under 0.x semver the minor is the breaking slot,
-         so bump this to 0.3.0.0 at the next breaking release. Hardcoded rather
+         so bump this to 0.4.0.0 at the next breaking release. Hardcoded rather
          than derived from $(Version), which the release tag overrides. -->
-    <AssemblyVersion>0.2.0.0</AssemblyVersion>
+    <AssemblyVersion>0.3.0.0</AssemblyVersion>
     <!-- FileVersion would otherwise default to the pinned AssemblyVersion; track
          the real version so builds stay distinguishable. Skipped for prerelease
          values, which are not valid Win32 file versions. -->
@@ -27,6 +27,18 @@
     <Company>clast-project</Company>
     <Description>FSST (Fast Static Symbol Table) string compression for .NET. Supports the FSST8 (1-byte codes), FSST12 (12-bit codes) and FSST16 (2-byte codes) variants.</Description>
     <PackageTags>fsst;compression;string;columnar;dictionary</PackageTags>
+    <PackageReleaseNotes>0.3.0 adds FSST16 (2-byte codes, up to 65,535 symbols, symbols up to 16 bytes) — the variant the Parquet FSST proposal calls FSST_16.
+
+Breaking:
+- TryDecompress now returns false for malformed input as well as a too-small destination, where it previously decoded as much as it could. The new Decompress overload returns OperationStatus so the two are distinguishable, and the allocating overloads throw InvalidDataException on corruption.
+- FSST8 and FSST12 produce different compressed bytes, as a result of the ratio fixes below. Data written by earlier versions still decodes; no reader change is needed.
+
+Fixes, all affecting compression ratio:
+- FSST8 length-2 symbols were in the table but unreachable when compressing.
+- Probe symbols carried a zeroed code field, making any symbol whose length matched the available input unreachable unless its code was 0 — every length-8 symbol, and every symbol at the end of a short value. Affected FSST8 and FSST12.
+- The pair-frequency counter overflowed past 3,840 occurrences into an adjacent pair's slot, inventing symbols absent from the input.
+
+Measured on a synthetic URL corpus: FSST8 1.93x to 3.11x, FSST12 2.07x to 2.71x. Compression is 2.7-3.0x faster and FSST12 training 3.1x.</PackageReleaseNotes>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageProjectUrl>https://github.com/clast-project/fsst</PackageProjectUrl>

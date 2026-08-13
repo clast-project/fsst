@@ -41,11 +41,7 @@ public class FsstEncoderTests
         Assert.Equal(data, FsstDecoder.FromSymbolTable(table).Decompress(compressed));
     }
 
-    [Fact(Skip = "Blocked on #5, a separate defect: Symbol.FromSpan/FromPointer build the probe " +
-                 "with SetCodeLen(CodeMax), and CodeMax (512) masks to code 0 rather than to " +
-                 "CodeMask (511) as cwida uses. The probe's code must be the maximum for the " +
-                 "h.Icl <= s.Icl ordering test to reduce to a length comparison; at 0 it also " +
-                 "requires the stored code to be 0 whenever lengths are equal. Un-skip once fixed.")]
+    [Fact]
     public void Compress_PrefersLongerSymbolOverLength2Prefix()
     {
         var table = new SymbolTable();
@@ -53,13 +49,66 @@ public class FsstEncoderTests
         Assert.True(table.Add(Symbol.FromSpan("abcd"u8)));
         table.Finalize(false);
 
-        // The 4-byte symbol must still win; reaching ShortCodes must not shadow the hash table.
-        // Fails today only because the input is exactly 4 bytes, so the probe length equals the
-        // stored symbol's and #5's zeroed code field decides the comparison.
+        // The 4-byte symbol must win; reaching ShortCodes must not shadow the hash table. The input
+        // is exactly 4 bytes, so the probe's length equals the stored symbol's and the comparison
+        // falls through to the code field — regression for #5.
         var compressed = FsstEncoder.Compress(table, Encoding.UTF8.GetBytes("abcd"));
 
         Assert.Single(compressed);
         Assert.Equal(Encoding.UTF8.GetBytes("abcd"), FsstDecoder.FromSymbolTable(table).Decompress(compressed));
+    }
+
+    [Fact]
+    public void Compress_MatchesSymbolWhoseLengthEqualsRemainingInput()
+    {
+        // Regression for #5 across every length. The probe is min(remaining, 8) bytes, so a symbol
+        // sitting at the end of a value always ties the probe on length. Each symbol below is added
+        // second so it lands at a nonzero code, which is what the zeroed probe code used to require.
+        for (int len = 2; len <= Symbol.MaxLength; len++)
+        {
+            var symbol = Encoding.UTF8.GetBytes(new string('x', len - 1) + "y");
+
+            var table = new SymbolTable();
+            Assert.True(table.Add(Symbol.FromSpan("zz"u8)));            // occupies a low code
+            Assert.True(table.Add(Symbol.FromSpan(symbol)));
+            table.Finalize(false);
+
+            var compressed = FsstEncoder.Compress(table, symbol);
+
+            Assert.True(compressed.Length == 1, $"length-{len} symbol took {compressed.Length} bytes, expected 1 code");
+            Assert.Equal(symbol, FsstDecoder.FromSymbolTable(table).Decompress(compressed));
+        }
+    }
+
+    [Fact]
+    public void Compress_MatchesLength8SymbolMidStream()
+    {
+        // Mid-stream the probe is always 8 bytes, so length-8 symbols tie on length every time.
+        var table = new SymbolTable();
+        Assert.True(table.Add(Symbol.FromSpan("zz"u8)));
+        Assert.True(table.Add(Symbol.FromSpan("abcdefgh"u8)));
+        table.Finalize(false);
+
+        var data = Encoding.UTF8.GetBytes("abcdefghabcdefghabcdefgh");
+        var compressed = FsstEncoder.Compress(table, data);
+
+        Assert.Equal(3, compressed.Length);
+        Assert.Equal(data, FsstDecoder.FromSymbolTable(table).Decompress(compressed));
+    }
+
+    [Fact]
+    public void BuildSymbolTable_TrainsLength8Symbols()
+    {
+        // The trainer parses with the same lookup, so #5 also stopped long symbols from ever being
+        // built: unusable symbols never appear in the parse, so pairs never grow from them.
+        var data = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("abcdefgh", 500)));
+        var table = FsstEncoder.BuildSymbolTable([data]);
+
+        Assert.True(table.LenHisto[7] > 0, $"expected length-8 symbols, got histogram [{string.Join(",", table.LenHisto)}]");
+
+        var compressed = FsstEncoder.Compress(table, data);
+        Assert.True(compressed.Length * 4 < data.Length,
+            $"expected better than 4x, got {(double)data.Length / compressed.Length:F2}x");
     }
 
     [Fact]

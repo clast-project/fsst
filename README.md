@@ -64,9 +64,15 @@ byte[] roundtrip      = decoder.Decompress(compressed);
 ### FSST16
 
 `Fsst16Encoder` / `Fsst16Decoder` use 16-bit codes written as little-endian `uint16`, with symbols
-of up to 16 bytes. The wider code space and longer symbols usually beat both FSST8 and FSST12 on
-compression ratio; the cost is 2 bytes per code, so FSST16 needs symbols longer than 2 bytes to pay
-for itself, and training is slower.
+of up to 16 bytes. It buys a wider code space and longer symbols at 2 bytes per code, so it needs
+symbols longer than 2 bytes to pay for itself, and training is slower.
+
+Which variant wins is data-dependent, and FSST8 is a strong default: when 8-byte symbols cover the
+data well it spends half the bits per code. On a 1.4 MB corpus of synthetic URLs, FSST8 reaches
+3.11x against FSST16's 2.27x; on short name-like values the gap is wider still. FSST16 earns its
+place where the effective symbol vocabulary is too large for 255 codes but the repeated substrings
+are long — and it is the variant the Parquet proposal specifies, which is reason enough when writing
+that format. Measure on your own data.
 
 ```csharp
 SymbolTable16 table   = Fsst16Encoder.BuildSymbolTable(corpus);

@@ -42,13 +42,38 @@ internal sealed class Counters
             Count1High[pos1]++;
     }
 
+    /// <summary>
+    /// Largest pair count representable in the split counter: a 4-bit high nibble over an 8-bit low
+    /// byte, decoded as <c>(nibble - (low != 0)) &lt;&lt; 8 | low</c>, which peaks at nibble 15 with
+    /// low 0.
+    /// </summary>
+    public const int Count2Max = 15 << 8; // 3840
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Count2Inc(int pos1, int pos2)
     {
-        byte old = Count2Low[pos1 * CodeMax + pos2];
-        Count2Low[pos1 * CodeMax + pos2] = (byte)(old + 1);
-        if (old == 0)
-            Count2High[pos1 * (CodeMax / 2) + (pos2 >> 1)] += (byte)(1 << ((pos2 & 1) << 2));
+        int loIdx = pos1 * CodeMax + pos2;
+        byte old = Count2Low[loIdx];
+
+        if (old != 0)
+        {
+            Count2Low[loIdx] = (byte)(old + 1);
+            return;
+        }
+
+        // The low byte wrapped, so the count carries into this pair's nibble. Nibbles are packed two
+        // per byte, so `+=` on a nibble already at 15 carries out of it and into the neighbouring
+        // nibble — which belongs to pair (pos1, pos2 ^ 1), a different pair entirely. That destroys
+        // this pair's count and invents one for a pair that may never have occurred, which MakeTable
+        // then builds a symbol for. Saturate at Count2Max instead: these counts only rank candidates,
+        // and a pair seen 3840 times in a <= 32KB sample already sorts to the top.
+        int hiIdx = pos1 * (CodeMax / 2) + (pos2 >> 1);
+        int shift = (pos2 & 1) << 2;
+        if (((Count2High[hiIdx] >> shift) & 0xF) == 0xF)
+            return;
+
+        Count2Low[loIdx] = 1;
+        Count2High[hiIdx] += (byte)(1 << shift);
     }
 
     /// <summary>

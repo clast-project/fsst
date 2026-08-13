@@ -61,7 +61,7 @@ public class Fsst16DecoderTests
         var (lengths, values) = Pack("ab"u8.ToArray());
         var decoder = Fsst16Decoder.FromSymbols(lengths, values);
 
-        byte[] compressed = [0x00, 0x00, 0xFF, 0xFF, 0x5A, 0x00, 0x00];
+        byte[] compressed = [0x00, 0x00, 0xFF, 0xFF, 0x5A, 0x00, 0x00, 0x00];
         Assert.Equal("abZab"u8.ToArray(), decoder.Decompress(compressed));
     }
 
@@ -72,6 +72,7 @@ public class Fsst16DecoderTests
         var decoder = Fsst16Decoder.FromSymbols(lengths, values);
 
         Assert.Equal("ab"u8.ToArray(), decoder.Decompress([0x00, 0x00, 0xFF, 0xFF]));
+        Assert.Equal("ab"u8.ToArray(), decoder.Decompress([0x00, 0x00, 0xFF, 0xFF, 0x5A]));
     }
 
     [Fact]
@@ -173,7 +174,7 @@ public class Fsst16DecoderTests
         var (lengths, values) = Pack("ab"u8.ToArray());
         var decoder = Fsst16Decoder.FromSymbols(lengths, values);
 
-        Assert.False(decoder.TryDecompress([0x00, 0x00, 0xFF, 0xFF, 0x5A], new byte[2], out _));
+        Assert.False(decoder.TryDecompress([0x00, 0x00, 0xFF, 0xFF, 0x5A, 0x00], new byte[2], out _));
     }
 
     [Fact]

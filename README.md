@@ -93,9 +93,10 @@ SymbolTable16 table = Fsst16Encoder.BuildSymbolTable(corpus, maxSymbolLength: 8)
 Two properties are worth knowing when writing FSST16 into a container format:
 
 - Tables from `BuildSymbolTable` always contain all 256 single-byte symbols. With 65,535 codes there
-  is no reason to leave a byte to a 3-byte escape sequence, so these tables never escape and never
-  expand beyond 2x. The escape code (65,535, followed by one literal byte) is still decoded, for
-  tables produced elsewhere.
+  is no reason to leave a byte to a 4-byte escape sequence, so these tables never escape and never
+  expand beyond 2x. The escape code — 65,535, followed by the literal byte as a little-endian
+  `uint16`, as the Parquet spec's §8.3 decode algorithm reads it — is still decoded, for tables
+  produced elsewhere.
 - Codes are assigned in ascending symbol-length order, so `ExportRaw` emits non-decreasing lengths
   and a consumer can derive a per-length histogram — and use the codes as-is — without rewriting
   every code in the compressed stream.

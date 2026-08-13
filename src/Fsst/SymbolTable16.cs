@@ -9,7 +9,7 @@ namespace Clast.Fsst;
 /// <summary>
 /// FSST16 symbol table: up to 65,535 symbols with 16-bit codes.
 /// Codes <c>0..65534</c> are symbols; code 65,535 is the escape marker, followed in the compressed
-/// stream by one literal byte.
+/// stream by the literal byte as a little-endian <c>uint16</c> in <c>[0, 255]</c>.
 /// </summary>
 /// <remarks>
 /// Tables produced by <see cref="Fsst16Encoder.BuildSymbolTable"/> always contain all 256

@@ -83,7 +83,7 @@ public class Fsst16CrossVariantTests
             int code = compressed[i] | (compressed[i + 1] << 8);
             i += 2;
             codes.Add(code);
-            if (code == SymbolTable16.EscCode) i++; // literal byte
+            if (code == SymbolTable16.EscCode) i += 2; // literal, as a uint16
         }
         return codes;
     }
@@ -180,7 +180,11 @@ public class Fsst16CrossVariantTests
 
         // Codes 0, 1, escape '!', 0, escape 'Z', 1 — dictated by the symbol set, not by our encoder.
         Assert.Equal(
-            new byte[] { 0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF, (byte)'!', 0x00, 0x00, 0xFF, 0xFF, (byte)'Z', 0x01, 0x00 },
+            new byte[]
+            {
+                0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF, (byte)'!', 0x00,
+                0x00, 0x00, 0xFF, 0xFF, (byte)'Z', 0x00, 0x01, 0x00,
+            },
             compressed16);
 
         Assert.Equal(data, Fsst16Decoder.FromSymbolTable(table16).Decompress(compressed16));
@@ -210,8 +214,9 @@ public class Fsst16CrossVariantTests
 
             if (code == SymbolTable16.EscCode)
             {
-                if (i >= compressed.Length) break; // dangling escape
-                output.Add(compressed[i++]);
+                if (i + 2 > compressed.Length) break; // truncated escape
+                output.Add(compressed[i]);        // low byte of the uint16 literal
+                i += 2;
             }
             else if (code < symbolsByCode.Length)
             {

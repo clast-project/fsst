@@ -139,7 +139,7 @@ public static class Fsst16Encoder
         // FSST8's dense Counters cannot be reused here: a 65,536-square pair matrix is not viable,
         // so this follows the sparse FSST12 approach.
         var count1 = new int[Symbol16.CodeMax];
-        var count2 = new Dictionary<(int, int), int>();
+        var count2 = new PairCounter();
 
         fixed (byte* samplePtr = sample)
         {
@@ -150,38 +150,29 @@ public static class Fsst16Encoder
             while (cur < end)
             {
                 var sym = Symbol16.FromPointer(cur, (int)(end - cur));
-                int code = prevTable.FindLongestSymbol(sym);
-                int len = prevTable.Symbols[code].Length();
+                int packed = prevTable.FindLongestPacked(sym);
+                int code = packed & 0xFFFF;
 
                 count1[code]++;
                 if (prevCode >= 0)
-                {
-                    var key = (prevCode, code);
-                    count2.TryGetValue(key, out int c);
-                    count2[key] = c + 1;
-                }
+                    count2.Increment(prevCode, code);
 
                 prevCode = code;
-                cur += len;
+                cur += packed >> 16;
             }
         }
 
         // Score candidates. A code always costs 2 bytes, so a length-L symbol saves L-1 codes --
         // 2*(L-1) bytes -- against spelling those bytes out one code at a time. Scores are only
         // used to rank candidates against each other, so the constant factor of 2 is dropped.
-        var candidates = new Dictionary<(ulong Lo, ulong Hi, int Len), (Symbol16 Symbol, long Gain)>();
+        var candidates = new Symbol16CandidateSet();
 
         void AddOrInc(Symbol16 s, long count)
         {
             int len = s.Length();
             if (len < 2) return; // single bytes are reserved unconditionally, not scored
 
-            var key = (s.Lo, s.Hi, len);
-            long gain = count * (len - 1);
-            if (candidates.TryGetValue(key, out var existing))
-                candidates[key] = (s, existing.Gain + gain);
-            else
-                candidates[key] = (s, gain);
+            candidates.Add(s, count * (len - 1));
         }
 
         for (int code = 0; code < Symbol16.CodeMax; code++)
@@ -191,21 +182,31 @@ public static class Fsst16Encoder
             AddOrInc(prevTable.Symbols[code], count);
         }
 
-        foreach (var pair in count2)
+        var pairKeys = count2.Keys;
+        var pairCounts = count2.Counts;
+        for (int i = 0; i < pairKeys.Length; i++)
         {
-            if (pair.Value < threshold) continue;
+            long key = pairKeys[i];
+            if (key < 0 || pairCounts[i] < threshold) continue;
 
-            int c1 = pair.Key.Item1;
-            int c2 = pair.Key.Item2;
+            int c1 = PairCounter.Pos1(key);
+            int c2 = PairCounter.Pos2(key);
             if (c1 == SymbolTable16.EscCode || c2 == SymbolTable16.EscCode) continue;
 
             var s1 = prevTable.Symbols[c1];
             if (s1.Length() >= maxSymbolLength) continue;
 
-            AddOrInc(Symbol16.Concat(s1, prevTable.Symbols[c2], maxSymbolLength), pair.Value);
+            AddOrInc(Symbol16.Concat(s1, prevTable.Symbols[c2], maxSymbolLength), pairCounts[i]);
         }
 
-        var sorted = new List<(Symbol16 Symbol, long Gain)>(candidates.Values);
+        var sorted = new List<(Symbol16 Symbol, long Gain)>(candidates.Count);
+        var slots = candidates.Symbols;
+        var gains = candidates.Gains;
+        for (int i = 0; i < slots.Length; i++)
+        {
+            if (slots[i].Length() != 0)
+                sorted.Add((slots[i], gains[i]));
+        }
         sorted.Sort(CompareCandidates);
 
         var newTable = NewBaseTable(maxSymbolLength);
@@ -243,13 +244,13 @@ public static class Fsst16Encoder
             while (cur < end)
             {
                 var sym = Symbol16.FromPointer(cur, (int)(end - cur));
-                int code = table.FindLongestSymbol(sym);
+                int packed = table.FindLongestPacked(sym);
 
                 // 2 bytes per code; an escape costs 4, being the marker plus a uint16 literal.
                 // Unreachable while every candidate table covers all 256 single bytes, but the cost
                 // model should not quietly disagree with what TryCompress emits.
-                compressedSize += code == SymbolTable16.EscCode ? 4 : 2;
-                cur += table.Symbols[code].Length();
+                compressedSize += (packed & 0xFFFF) == SymbolTable16.EscCode ? 4 : 2;
+                cur += packed >> 16;
             }
         }
 
@@ -300,7 +301,8 @@ public static class Fsst16Encoder
             while (cur < end)
             {
                 var sym = Symbol16.FromPointer(cur, (int)(end - cur));
-                int code = table.FindLongestSymbol(sym);
+                int packed = table.FindLongestPacked(sym);
+                int code = packed & 0xFFFF;
 
                 if (code == SymbolTable16.EscCode)
                 {
@@ -322,7 +324,7 @@ public static class Fsst16Encoder
                     dstPtr[outPos] = (byte)code;
                     dstPtr[outPos + 1] = (byte)(code >> 8);
                     outPos += 2;
-                    cur += table.Symbols[code].Length();
+                    cur += packed >> 16;
                 }
             }
         }

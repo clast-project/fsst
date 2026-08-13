@@ -175,8 +175,9 @@ public static class FsstEncoder
 
             if (cur < end)
             {
-                int code1 = table.FindLongestSymbol(Symbol.FromPointer(cur, Math.Min((int)(end - cur), 8)));
-                int len1 = table.Symbols[code1].Length();
+                int packed1 = table.FindLongestPacked(Symbol.FromPointer(cur, Math.Min((int)(end - cur), 8)));
+                int code1 = packed1 & Symbol.CodeMask;
+                int len1 = packed1 >> Symbol.LenBits;
                 byte* start = cur;
                 cur += len1;
                 // gain: bytesConsumed - cost. Cost is 1 for real symbol, 2 for escape.
@@ -191,8 +192,9 @@ public static class FsstEncoder
                         counters.Count1Inc(*start);
 
                     start = cur;
-                    int code2 = table.FindLongestSymbol(Symbol.FromPointer(cur, Math.Min((int)(end - cur), 8)));
-                    int len2 = table.Symbols[code2].Length();
+                    int packed2 = table.FindLongestPacked(Symbol.FromPointer(cur, Math.Min((int)(end - cur), 8)));
+                    int code2 = packed2 & Symbol.CodeMask;
+                    int len2 = packed2 >> Symbol.LenBits;
                     cur += len2;
 
                     bool isEscape2 = code2 < Symbol.CodeBase;
@@ -319,8 +321,9 @@ public static class FsstEncoder
             {
                 int avail = (int)(end - cur);
                 var sym = Symbol.FromPointer(cur, Math.Min(avail, 8));
-                int code = table.FindLongestSymbol(sym);
-                int len = table.Symbols[code].Length();
+                int packed = table.FindLongestPacked(sym);
+                int code = packed & Symbol.CodeMask;
+                int len = packed >> Symbol.LenBits;
 
                 byte byteCode = (byte)code;
                 if (byteCode == EscCode)

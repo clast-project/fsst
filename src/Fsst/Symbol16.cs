@@ -109,18 +109,12 @@ internal struct Symbol16
     }
 
     /// <summary>Create a symbol from up to 16 bytes.</summary>
-    public static Symbol16 FromSpan(ReadOnlySpan<byte> input)
+    public static unsafe Symbol16 FromSpan(ReadOnlySpan<byte> input)
     {
         int len = Math.Min(input.Length, MaxLength);
-        Span<byte> buf = stackalloc byte[MaxLength];
-        buf.Clear();
-        input.Slice(0, len).CopyTo(buf);
-
-        var s = new Symbol16
-        {
-            Lo = Unsafe.ReadUnaligned<ulong>(ref buf[0]),
-            Hi = Unsafe.ReadUnaligned<ulong>(ref buf[8]),
-        };
+        var s = new Symbol16();
+        fixed (byte* ptr = input)
+            Load(ptr, len, ref s);
         s.SetCodeLen(EscCode, len);
         return s;
     }
@@ -134,23 +128,37 @@ internal struct Symbol16
     {
         var s = new Symbol16();
         int len = available < MaxLength ? available : MaxLength;
+        Load(ptr, len, ref s);
+        s.SetCodeLen(EscCode, len);
+        return s;
+    }
 
-        if (available >= MaxLength)
+    /// <summary>
+    /// Fill <paramref name="s"/>'s value from <paramref name="len"/> bytes, zero-padded to 16.
+    /// </summary>
+    /// <remarks>
+    /// The 16-byte probe means anything within 15 bytes of the end of a value takes the narrow
+    /// path, which for short values is most positions — so this reads as wide as is safe instead of
+    /// going through a cleared stack buffer.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static unsafe void Load(byte* ptr, int len, ref Symbol16 s)
+    {
+        if (len >= MaxLength)
         {
             s.Lo = Unsafe.ReadUnaligned<ulong>(ptr);
             s.Hi = Unsafe.ReadUnaligned<ulong>(ptr + 8);
         }
+        else if (len >= 8)
+        {
+            s.Lo = Unsafe.ReadUnaligned<ulong>(ptr);
+            s.Hi = Symbol.LoadTail(ptr + 8, len - 8);
+        }
         else
         {
-            Span<byte> buf = stackalloc byte[MaxLength];
-            buf.Clear();
-            new ReadOnlySpan<byte>(ptr, len).CopyTo(buf);
-            s.Lo = Unsafe.ReadUnaligned<ulong>(ref buf[0]);
-            s.Hi = Unsafe.ReadUnaligned<ulong>(ref buf[8]);
+            s.Lo = Symbol.LoadTail(ptr, len);
+            s.Hi = 0;
         }
-
-        s.SetCodeLen(EscCode, len);
-        return s;
     }
 
     /// <summary>Concatenate two symbols, truncating at <paramref name="maxLength"/> bytes.</summary>

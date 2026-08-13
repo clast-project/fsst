@@ -57,12 +57,15 @@ public sealed class SymbolMap
             Symbols[i] = Symbol.Free();
 
         // Hash table free
-        for (int i = 0; i < HashTabSize; i++)
-            HashTab[i] = Symbol.Free();
+        HashTab.AsSpan().Fill(Symbol.Free());
 
-        // shortCodes: each 2-byte value maps to low byte with length 1
-        for (int i = 0; i < 65536; i++)
-            ShortCodes[i] = (ushort)((1 << CodeBits12) | (i & 255));
+        // shortCodes: each 2-byte value maps to low byte with length 1. The low byte varies with the
+        // index, so this one cannot be a Fill; unrolling by 256 lets the JIT hoist the constant.
+        for (int i = 0; i < 65536; i += 256)
+        {
+            for (int j = 0; j < 256; j++)
+                ShortCodes[i + j] = (ushort)((1 << CodeBits12) | j);
+        }
 
         Array.Clear(LenHisto, 0, LenHisto.Length);
     }
@@ -154,6 +157,31 @@ public sealed class SymbolMap
         NSymbols++;
         LenHisto[len - 1]++;
         return true;
+    }
+
+    /// <summary>
+    /// As <see cref="FindLongestSymbol"/>, but returns <c>(length &lt;&lt; CodeBits12) | code</c>,
+    /// sparing the compressor a second indexed load into <see cref="Symbols"/> per input position.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal int FindLongestPacked(Symbol s)
+    {
+        int idx = (int)(s.Hash() & (HashTabSize - 1));
+        ref Symbol h = ref HashTab[idx];
+        if (h.Icl <= s.Icl &&
+            h.Val == (s.Val & (0xFFFFFFFFFFFFFFFF >> (int)(byte)h.Icl)))
+        {
+            return (int)(((h.Icl >> 28) << CodeBits12) | ((h.Icl >> 16) & CodeMask12));
+        }
+
+        if (s.Length() >= 2)
+        {
+            ushort sc = ShortCodes[s.First2()];
+            if ((sc & CodeMask12) >= CodeBase12)
+                return sc;
+        }
+
+        return (1 << CodeBits12) | s.First();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -116,7 +116,7 @@ public static class Fsst12Encoder
 
         // Count symbol and pair frequencies
         var count1 = new int[SymbolMap.CodeMax12];
-        var count2 = new Dictionary<(int, int), int>();
+        var count2 = new PairCounter();
 
         fixed (byte* samplePtr = sample)
         {
@@ -128,16 +128,13 @@ public static class Fsst12Encoder
             {
                 int avail = (int)(end - cur);
                 var sym = Symbol.FromPointer(cur, Math.Min(avail, 8));
-                int code = prevTable.FindLongestSymbol(sym);
-                int len = prevTable.Symbols[code].Length();
+                int packedCode = prevTable.FindLongestPacked(sym);
+                int code = packedCode & SymbolMap.CodeMask12;
+                int len = packedCode >> SymbolMap.CodeBits12;
 
                 count1[code]++;
                 if (prevCode >= 0)
-                {
-                    var key = (prevCode, code);
-                    count2.TryGetValue(key, out int c);
-                    count2[key] = c + 1;
-                }
+                    count2.Increment(prevCode, code);
 
                 prevCode = code;
                 cur += len;
@@ -160,11 +157,18 @@ public static class Fsst12Encoder
         }
 
         // Pair symbols (concatenations)
-        foreach (var ((c1, c2), count) in count2)
+        var pairKeys = count2.Keys;
+        var pairCounts = count2.Counts;
+        for (int i = 0; i < pairKeys.Length; i++)
         {
+            long key = pairKeys[i];
+            if (key < 0) continue;
+
+            int count = pairCounts[i];
             if (count < threshold) continue;
-            var s1 = prevTable.Symbols[c1];
-            var s2 = prevTable.Symbols[c2];
+
+            var s1 = prevTable.Symbols[PairCounter.Pos1(key)];
+            var s2 = prevTable.Symbols[PairCounter.Pos2(key)];
             int combinedLen = s1.Length() + s2.Length();
             if (combinedLen > Symbol.MaxLength) continue;
 
@@ -201,8 +205,7 @@ public static class Fsst12Encoder
             {
                 int avail = (int)(end - cur);
                 var sym = Symbol.FromPointer(cur, Math.Min(avail, 8));
-                int code = table.FindLongestSymbol(sym);
-                int len = table.Symbols[code].Length();
+                int len = table.FindLongestPacked(sym) >> SymbolMap.CodeBits12;
 
                 totalSymLen += len;
                 codeCount++;
@@ -258,9 +261,9 @@ public static class Fsst12Encoder
             {
                 int avail = (int)(end - cur);
                 var sym = Symbol.FromPointer(cur, Math.Min(avail, 8));
-                int code = table.FindLongestSymbol(sym);
-                int len = table.Symbols[code].Length();
-                cur += len;
+                int packed = table.FindLongestPacked(sym);
+                int code = packed & SymbolMap.CodeMask12;
+                cur += packed >> SymbolMap.CodeBits12;
 
                 if (!hasPending)
                 {

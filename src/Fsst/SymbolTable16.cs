@@ -65,23 +65,18 @@ public sealed class SymbolTable16
         MaxSymbolLength = maxSymbolLength;
         NSymbols = 0;
 
+        // Span.Fill rather than scalar loops: this touches ~4.6 MB across four arrays and runs once
+        // per training iteration, so it is a measurable slice of BuildSymbolTable on small inputs.
         var unused = Symbol16.Free();
-        for (int i = 0; i < Symbol16.CodeMax; i++)
-            Symbols[i] = unused;
+        Symbols.AsSpan().Fill(unused);
+        HashTab.AsSpan().Fill(unused);
+        ByteCodes.AsSpan().Fill(EscCode);
+        ShortCodes.AsSpan().Fill(EscCode);
 
         // The escape "symbol" consumes exactly one input byte.
         var esc = Symbol16.FromByte(0);
         esc.SetCodeLen(EscCode, 1);
         Symbols[EscCode] = esc;
-
-        for (int i = 0; i < HashTabSize; i++)
-            HashTab[i] = unused;
-
-        for (int i = 0; i < 256; i++)
-            ByteCodes[i] = EscCode;
-
-        for (int i = 0; i < 65536; i++)
-            ShortCodes[i] = EscCode;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -142,6 +137,35 @@ public sealed class SymbolTable16
     /// Greedy longest-match lookup: 3+ byte symbols via the lossy hash, then 2-byte, then 1-byte.
     /// Returns <see cref="EscCode"/> when the leading byte has no symbol at all.
     /// </summary>
+    /// <summary>
+    /// As <see cref="FindLongestSymbol"/>, but returns <c>(length &lt;&lt; 16) | code</c>. The
+    /// compressor needs both for every input position, and a Symbol16 is 24 bytes, so taking the
+    /// length from here rather than re-indexing <see cref="Symbols"/> saves a strided load per
+    /// iteration.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal int FindLongestPacked(in Symbol16 s)
+    {
+        int idx = (int)(s.Hash() & (HashTabSize - 1));
+        ref Symbol16 h = ref HashTab[idx];
+        if (h.Icl <= s.Icl)
+        {
+            int hlen = h.Length();
+            if (h.Lo == (s.Lo & Symbol16.LoMask[hlen]) && h.Hi == (s.Hi & Symbol16.HiMask[hlen]))
+                return (hlen << 16) | h.Code();
+        }
+
+        if (s.Length() >= 2)
+        {
+            ushort code = ShortCodes[s.First2()];
+            if (code != EscCode)
+                return (2 << 16) | code;
+        }
+
+        // A byte code, or the escape — either way one input byte is consumed.
+        return (1 << 16) | ByteCodes[s.First()];
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal int FindLongestSymbol(in Symbol16 s)
     {

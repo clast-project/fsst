@@ -165,8 +165,9 @@ public static class Fsst16Encoder
             }
         }
 
-        // Score candidates. A code always costs 2 bytes, so a length-L symbol saves L-1 codes,
-        // i.e. 2*(L-1) bytes, relative to spelling those bytes out one code at a time.
+        // Score candidates. A code always costs 2 bytes, so a length-L symbol saves L-1 codes --
+        // 2*(L-1) bytes -- against spelling those bytes out one code at a time. Scores are only
+        // used to rank candidates against each other, so the constant factor of 2 is dropped.
         var candidates = new Dictionary<(ulong Lo, ulong Hi, int Len), (Symbol16 Symbol, long Gain)>();
 
         void AddOrInc(Symbol16 s, long count)

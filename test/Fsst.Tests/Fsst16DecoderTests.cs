@@ -93,6 +93,27 @@ public class Fsst16DecoderTests
     }
 
     [Fact]
+    public void Decompress_UnusedCodeDoesNotTouchTheDestination()
+    {
+        // A zero-length slot must behave exactly like an out-of-range code: emit nothing and
+        // write nothing. Both are unreachable in well-formed data, so they should agree.
+        var (lengths, values) = Pack("ab"u8.ToArray(), []);
+        var decoder = Fsst16Decoder.FromSymbols(lengths, values);
+
+        var zeroLengthSlot = new byte[32];
+        var outOfRange = new byte[32];
+        for (int i = 0; i < 32; i++) zeroLengthSlot[i] = outOfRange[i] = 0xCC;
+
+        Assert.True(decoder.TryDecompress([0x01, 0x00], zeroLengthSlot, out int a)); // slot 1, length 0
+        Assert.True(decoder.TryDecompress([0x05, 0x00], outOfRange, out int b));     // no slot 5 at all
+
+        Assert.Equal(0, a);
+        Assert.Equal(0, b);
+        Assert.Equal(outOfRange, zeroLengthSlot);
+        Assert.All(zeroLengthSlot, x => Assert.Equal(0xCC, x));
+    }
+
+    [Fact]
     public void FromSymbols_RejectsMalformedInput()
     {
         var (lengths, values) = Pack("ab"u8.ToArray());

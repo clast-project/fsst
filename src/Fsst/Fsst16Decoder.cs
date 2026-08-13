@@ -139,6 +139,8 @@ public sealed class Fsst16Decoder
                 if (code >= slots) continue; // unused code emits nothing
 
                 int len = _len[code];
+                if (len == 0) continue; // unused slot; same as an out-of-range code
+
                 if (outPos + len > dstLen) return false;
 
                 if (outPos + Symbol16.MaxLength <= dstLen)

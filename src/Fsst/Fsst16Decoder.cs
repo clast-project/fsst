@@ -3,6 +3,7 @@
 
 using System.Buffers;
 using System.Buffers.Binary;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
 
@@ -104,14 +105,31 @@ public sealed class Fsst16Decoder
     }
 
     /// <summary>
-    /// Decompress <paramref name="compressed"/> into <paramref name="destination"/>.
-    /// Returns false (and sets <paramref name="written"/> to 0) if <paramref name="destination"/>
-    /// is too small. Use <see cref="MaxDecompressedLength"/> for a safe upper bound.
+    /// Decompress <paramref name="compressed"/> into <paramref name="destination"/>, reporting
+    /// which of the two failure modes occurred.
     /// </summary>
-    public unsafe bool TryDecompress(ReadOnlySpan<byte> compressed, Span<byte> destination, out int written)
+    /// <returns>
+    /// <see cref="OperationStatus.Done"/> on success;
+    /// <see cref="OperationStatus.DestinationTooSmall"/> if <paramref name="destination"/> cannot
+    /// hold the output (size it with <see cref="MaxDecompressedLength"/> to rule this out);
+    /// <see cref="OperationStatus.InvalidData"/> if <paramref name="compressed"/> is not a
+    /// well-formed FSST16 code stream. <paramref name="written"/> is 0 unless the status is
+    /// <see cref="OperationStatus.Done"/>, so partial output is never surfaced.
+    /// </returns>
+    /// <remarks>
+    /// Rejects exactly what the Parquet FSST spec's §8.3 decode algorithm calls an error: an
+    /// odd-length stream, an escape marker not followed by a full <c>uint16</c> literal, a literal
+    /// above 255, and a code at or beyond the symbol count. Validation is per call, so pass one
+    /// value at a time — an escape must not be able to borrow the next value's bytes (§5.2), which
+    /// is what <see cref="TryDecompressBatch"/> arranges by slicing first.
+    /// </remarks>
+    public unsafe OperationStatus Decompress(ReadOnlySpan<byte> compressed, Span<byte> destination, out int written)
     {
         written = 0;
-        if (compressed.Length == 0) return true;
+        if (compressed.Length == 0) return OperationStatus.Done;
+
+        // §8.3: `if len(compressed_bytes) % 2 != 0: error truncated uint16`.
+        if ((compressed.Length & 1) != 0) return OperationStatus.InvalidData;
 
         int outPos = 0;
         int dstLen = destination.Length;
@@ -123,31 +141,33 @@ public sealed class Fsst16Decoder
             byte* cur = inPtr;
             byte* end = inPtr + compressed.Length;
 
-            // A trailing odd byte cannot form a code and is ignored.
-            while (cur + 2 <= end)
+            // The length is even, so a whole code is always available at the top of the loop.
+            while (cur < end)
             {
                 int code = cur[0] | (cur[1] << 8);
                 cur += 2;
 
                 if (code == EscCode)
                 {
-                    // The literal is a little-endian uint16 in [0, 255], not a bare byte (§8.3 reads
-                    // it with read_uint16_le). The high byte is zero in well-formed input; rejecting
-                    // a nonzero one belongs with the rest of the validation work, so take the low
-                    // byte for now rather than desynchronising the stream over it.
-                    if (cur + 2 > end) break; // truncated escape; ignore
-                    if (outPos >= dstLen) return false;
+                    // The literal is a little-endian uint16 in [0, 255], not a bare byte: §8.3 reads
+                    // it with read_uint16_le and errors when it exceeds 255.
+                    if (cur + 2 > end) return OperationStatus.InvalidData;  // truncated escape (§5.2)
+                    if (cur[1] != 0) return OperationStatus.InvalidData;    // literal > 255
+                    if (outPos >= dstLen) return OperationStatus.DestinationTooSmall;
                     outPtr[outPos++] = cur[0];
                     cur += 2;
                     continue;
                 }
 
-                if (code >= slots) continue; // unused code emits nothing
+                // §8.3: `if code >= symbol_table.symbol_count: error invalid symbol code`. A slot
+                // inside the table but left empty is the same thing — a conformant symbol table has
+                // no zero-length symbols, since length_histogram only covers lengths 1 and up.
+                if (code >= slots) return OperationStatus.InvalidData;
 
                 int len = _len[code];
-                if (len == 0) continue; // unused slot; same as an out-of-range code
+                if (len == 0) return OperationStatus.InvalidData;
 
-                if (outPos + len > dstLen) return false;
+                if (outPos + len > dstLen) return OperationStatus.DestinationTooSmall;
 
                 if (outPos + Symbol16.MaxLength <= dstLen)
                 {
@@ -165,7 +185,29 @@ public sealed class Fsst16Decoder
         }
 
         written = outPos;
-        return true;
+        return OperationStatus.Done;
+    }
+
+    /// <summary>
+    /// Decompress <paramref name="compressed"/> into <paramref name="destination"/>.
+    /// Returns false (and sets <paramref name="written"/> to 0) if <paramref name="destination"/>
+    /// is too small or <paramref name="compressed"/> is malformed; use
+    /// <see cref="Decompress(ReadOnlySpan{byte}, Span{byte}, out int)"/> to tell the two apart, or
+    /// size the destination with <see cref="MaxDecompressedLength"/> so only the latter is possible.
+    /// </summary>
+    public bool TryDecompress(ReadOnlySpan<byte> compressed, Span<byte> destination, out int written)
+        => Decompress(compressed, destination, out written) == OperationStatus.Done;
+
+    /// <summary>
+    /// Translate a non-<see cref="OperationStatus.Done"/> status into an exception for the
+    /// convenience overloads, which size their own destination and so can only fail on bad input.
+    /// </summary>
+    private static void ThrowIfNotDone(OperationStatus status, string tooSmallMessage)
+    {
+        if (status == OperationStatus.Done) return;
+        if (status == OperationStatus.InvalidData)
+            throw new InvalidDataException("The compressed data is not a well-formed FSST16 code stream.");
+        throw new InvalidOperationException(tooSmallMessage);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -186,8 +228,7 @@ public sealed class Fsst16Decoder
 
         int max = MaxDecompressedLength(compressed.Length);
         Span<byte> dst = writer.GetSpan(max);
-        if (!TryDecompress(compressed, dst, out int written))
-            throw new InvalidOperationException("Buffer writer returned a span smaller than the size hint.");
+        ThrowIfNotDone(Decompress(compressed, dst, out int written), "Buffer writer returned a span smaller than the size hint.");
         writer.Advance(written);
     }
 
@@ -200,8 +241,7 @@ public sealed class Fsst16Decoder
         byte[] rented = ArrayPool<byte>.Shared.Rent(max);
         try
         {
-            if (!TryDecompress(compressed, rented.AsSpan(0, max), out int written))
-                throw new InvalidOperationException("MaxDecompressedLength was too small.");
+            ThrowIfNotDone(Decompress(compressed, rented.AsSpan(0, max), out int written), "MaxDecompressedLength was too small.");
             var result = new byte[written];
             Array.Copy(rented, result, written);
             return result;
@@ -221,8 +261,7 @@ public sealed class Fsst16Decoder
         byte[] rented = ArrayPool<byte>.Shared.Rent(max);
         try
         {
-            if (!TryDecompress(compressed, rented.AsSpan(0, max), out int written))
-                throw new InvalidOperationException("MaxDecompressedLength was too small.");
+            ThrowIfNotDone(Decompress(compressed, rented.AsSpan(0, max), out int written), "MaxDecompressedLength was too small.");
             return Encoding.UTF8.GetString(rented, 0, written);
         }
         finally
@@ -248,10 +287,30 @@ public sealed class Fsst16Decoder
         Span<byte> destination,
         Span<int> destinationOffsets,
         out int totalWritten)
+        => DecompressBatch(compressedData, compressedLengths, destination, destinationOffsets, out totalWritten)
+           == OperationStatus.Done;
+
+    /// <summary>
+    /// Batch counterpart of <see cref="Decompress(ReadOnlySpan{byte}, Span{byte}, out int)"/>, so a
+    /// caller can tell a too-small buffer from corrupt input. Each value is decoded from its own
+    /// slice, so an escape at the end of one value cannot consume the next value's bytes (§5.2).
+    /// </summary>
+    /// <returns>
+    /// <see cref="OperationStatus.InvalidData"/> if the offsets span is missized, a length is
+    /// negative or overruns <paramref name="compressedData"/>, or any value is malformed;
+    /// otherwise the status of the first value that did not decode, or
+    /// <see cref="OperationStatus.Done"/>.
+    /// </returns>
+    public OperationStatus DecompressBatch(
+        ReadOnlySpan<byte> compressedData,
+        ReadOnlySpan<int> compressedLengths,
+        Span<byte> destination,
+        Span<int> destinationOffsets,
+        out int totalWritten)
     {
         totalWritten = 0;
         if (destinationOffsets.Length != compressedLengths.Length + 1)
-            return false;
+            return OperationStatus.InvalidData;
 
         int inOffset = 0;
         int outOffset = 0;
@@ -261,10 +320,11 @@ public sealed class Fsst16Decoder
         {
             int len = compressedLengths[i];
             if (len < 0 || inOffset + len > compressedData.Length)
-                return false;
+                return OperationStatus.InvalidData;
 
-            if (!TryDecompress(compressedData.Slice(inOffset, len), destination[outOffset..], out int written))
-                return false;
+            var status = Decompress(compressedData.Slice(inOffset, len), destination[outOffset..], out int written);
+            if (status != OperationStatus.Done)
+                return status;
 
             inOffset += len;
             outOffset += written;
@@ -272,6 +332,6 @@ public sealed class Fsst16Decoder
         }
 
         totalWritten = outOffset;
-        return true;
+        return OperationStatus.Done;
     }
 }

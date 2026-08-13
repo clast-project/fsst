@@ -101,6 +101,31 @@ Two properties are worth knowing when writing FSST16 into a container format:
   and a consumer can derive a per-length histogram — and use the codes as-is — without rewriting
   every code in the compressed stream.
 
+### Malformed input
+
+All three decoders reject a corrupt code stream rather than decoding as much of it as they can. The
+`Decompress(compressed, destination, out written)` overload returns a `System.Buffers.OperationStatus`
+so a caller can tell corruption from a destination that is merely too small:
+
+```csharp
+switch (decoder.Decompress(compressed, dst, out int written))
+{
+    case OperationStatus.Done:                /* dst[..written] */      break;
+    case OperationStatus.DestinationTooSmall: /* retry, larger */       break;
+    case OperationStatus.InvalidData:         /* reject the value */    break;
+}
+```
+
+`TryDecompress` returns false for either, and the allocating overloads (`Decompress(compressed)`,
+`DecompressString`) throw `InvalidDataException` on corruption. `written` is 0 unless the status is
+`Done`, so partial output is never surfaced.
+
+Rejected: a code at or beyond the symbol count, an escape marker with no literal after it, and — for
+FSST16 — an odd-length stream or a literal above 255. These are the cases the Parquet FSST spec's
+§8.3 decode algorithm calls errors, and §8.1 requires a reader to fail on. Validate one value at a
+time: `TryDecompressBatch` / `DecompressBatch` slice per value first, so an escape at the end of one
+value can never consume the next value's bytes.
+
 ### Persisting a symbol table
 
 ```csharp
